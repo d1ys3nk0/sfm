@@ -44,8 +44,30 @@ func newManager(c *Config, out io.Writer) (*manager, error) {
 	}
 	return m, nil
 }
-func (m *manager) vaultEntries() (map[string]Entry, error) {
+func (m *manager) vaultEntries() (map[string]Entry, error) { return m.vaultEntriesScope("") }
+func (m *manager) vaultEntriesScope(scope string) (map[string]Entry, error) {
 	v := map[string]Entry{}
+	if scope != "" {
+		if _, e := m.c.destination(scope); e != nil {
+			return nil, e
+		}
+		root := filepath.Join(m.c.Vault, scope)
+		if e := safe(root); e != nil {
+			return nil, e
+		}
+		if !exists(root) {
+			return v, nil
+		}
+		e := scanTree(root, func(path string, d Entry) error {
+			n, e := filepath.Rel(m.c.Vault, path)
+			if e != nil {
+				return e
+			}
+			v[n] = d
+			return nil
+		})
+		return v, e
+	}
 	for _, ns := range []string{"home", "root"} {
 		p := filepath.Join(m.c.Vault, ns)
 		if !exists(p) {
@@ -187,6 +209,9 @@ func (m *manager) sourceEntriesScope(scope string) (map[string]Entry, []string, 
 		p, err := m.c.destination(scope)
 		if err != nil {
 			return nil, nil, nil, err
+		}
+		if e := safe(p); e != nil {
+			return nil, nil, nil, e
 		}
 		roots = []string{p}
 	} else {
@@ -494,12 +519,24 @@ func (m *manager) install(force, dry bool) error {
 	}
 	return apply(actions)
 }
-func (m *manager) inspect(diff bool) (int, error) {
-	v, e := m.vaultEntries()
+func (m *manager) inspect(diff bool, scope string) (int, error) {
+	v, e := m.vaultEntriesScope(scope)
 	if e != nil {
 		return 2, e
 	}
-	source, _, warnings, e := m.sourceEntries()
+	source := map[string]Entry{}
+	var warnings []string
+	discover := true
+	if scope != "" {
+		p, err := m.c.destination(scope)
+		if err != nil {
+			return 2, err
+		}
+		discover = exists(p)
+	}
+	if discover {
+		source, _, warnings, e = m.sourceEntriesScope(scope)
+	}
 	if e != nil {
 		return 2, e
 	}
@@ -520,6 +557,9 @@ func (m *manager) inspect(diff bool) (int, error) {
 		}
 	}
 	for _, n := range sorted(m.meta.Entries, false) {
+		if scope != "" && !within(n, scope) {
+			continue
+		}
 		if _, ok := v[n]; !ok {
 			fmt.Fprintln(m.out, "missing metadata payload: "+n)
 			findings = true

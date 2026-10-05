@@ -16,10 +16,10 @@ Usage: sfm [--config FILE] COMMAND [OPTIONS]
 Commands:
   snapshot [--dry] [--json]   Copy selected files into the vault
   install [--dry] [--force]   Install missing files; force replaces differences
-  diff                      Compare the vault and installed files
+  diff [PATH]               Compare all files or one file/directory subtree
   verify                    Check selection and metadata integrity
-  add PATH                  Track and capture a file or directory
-  del PATH                  Stop tracking a file or directory
+  track PATH                Track and capture a file or directory
+  forget PATH               Stop tracking a file or directory
 Global options: --config FILE, --help, --version
 `
 
@@ -71,14 +71,14 @@ func run(args []string, out io.Writer) (int, error) {
 		return 0, nil
 	}
 	cmd := positional[0]
-	if cmd != "snapshot" && cmd != "install" && cmd != "diff" && cmd != "verify" && cmd != "add" && cmd != "del" {
+	if cmd != "snapshot" && cmd != "install" && cmd != "diff" && cmd != "verify" && cmd != "track" && cmd != "forget" {
 		return 2, fmt.Errorf("unknown command: %s", cmd)
 	}
 	want := 1
-	if cmd == "add" || cmd == "del" {
+	if cmd == "track" || cmd == "forget" {
 		want = 2
 	}
-	if len(positional) != want {
+	if len(positional) != want && !(cmd == "diff" && len(positional) == 2) {
 		return 2, fmt.Errorf("invalid arguments for %s", cmd)
 	}
 	if force && cmd != "install" || dry && cmd != "snapshot" && cmd != "install" || jsonOutput && (cmd != "snapshot" || !dry) {
@@ -103,7 +103,7 @@ func run(args []string, out io.Writer) (int, error) {
 	if e != nil {
 		return 2, e
 	}
-	if !dry && (cmd == "snapshot" || cmd == "install" || cmd == "add" || cmd == "del") {
+	if !dry && (cmd == "snapshot" || cmd == "install" || cmd == "track" || cmd == "forget") {
 		unlock, e := lock(state)
 		if e != nil {
 			return 2, e
@@ -120,26 +120,25 @@ func run(args []string, out io.Writer) (int, error) {
 	case "install":
 		e = m.install(force, dry)
 	case "diff":
-		return m.inspect(true)
+		scope := ""
+		if len(positional) == 2 {
+			path, e := c.targetPath(positional[1])
+			if e != nil {
+				return 2, e
+			}
+			scope = c.name(path)
+		}
+		return m.inspect(true, scope)
 	case "verify":
-		return m.inspect(false)
-	case "add", "del":
-		e = m.track(positional[1], cmd == "add")
+		return m.inspect(false, "")
+	case "track", "forget":
+		e = m.track(positional[1], cmd == "track")
 	}
 	return 0, e
 }
 func (m *manager) track(value string, adding bool) error {
-	p, e := filepath.Abs(expand(value, m.c.home))
+	p, e := m.c.targetPath(value)
 	if e != nil {
-		return e
-	}
-	if p == m.c.home || p == "/" || within(p, m.c.Vault) || within(m.c.Vault, p) {
-		return fmt.Errorf("unsafe target: %s", p)
-	}
-	if strings.ContainsAny(p, "\r\n") {
-		return fmt.Errorf("target contains newline")
-	}
-	if e = safe(p); e != nil {
 		return e
 	}
 	name := m.c.name(p)
@@ -242,4 +241,24 @@ func (m *manager) track(value string, adding bool) error {
 	bd := bytesEntry(bb)
 	actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &bd, bb})
 	return apply(actions)
+}
+
+func (c *Config) targetPath(value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("target path is required")
+	}
+	p, e := filepath.Abs(expand(value, c.home))
+	if e != nil {
+		return "", e
+	}
+	if p == c.home || p == "/" || within(p, c.Vault) || within(c.Vault, p) {
+		return "", fmt.Errorf("unsafe target: %s", p)
+	}
+	if strings.ContainsAny(p, "\r\n") {
+		return "", fmt.Errorf("target contains newline")
+	}
+	if e = safe(p); e != nil {
+		return "", e
+	}
+	return p, nil
 }

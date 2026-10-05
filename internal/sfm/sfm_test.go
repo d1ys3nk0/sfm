@@ -158,18 +158,33 @@ func TestMissingRootPreservesCapture(t *testing.T) {
 		t.Fatal("missing root deleted capture")
 	}
 }
-func TestTrackAndComments(t *testing.T) {
+func TestTrackForgetAndComments(t *testing.T) {
 	f := setup(t)
 	f.write(filepath.Join(f.home, "one"), "one")
 	f.write(filepath.Join(f.home, "two"), "two")
-	c, o, e := f.run("add", filepath.Join(f.home, "one"))
+	c, o, e := f.run("track", filepath.Join(f.home, "one"))
 	requireCode(t, 0, c, o, e)
-	c, o, e = f.run("add", filepath.Join(f.home, "two"))
+	c, o, e = f.run("track", filepath.Join(f.home, "two"))
 	requireCode(t, 0, c, o, e)
-	c, o, e = f.run("del", filepath.Join(f.home, "one"))
+	c, o, e = f.run("forget", filepath.Join(f.home, "one"))
 	requireCode(t, 0, c, o, e)
 	if exists(filepath.Join(f.vault, "home/one")) || !exists(filepath.Join(f.vault, "home/two")) || !exists(filepath.Join(f.home, "one")) {
 		t.Fatal("scope or source mutation")
+	}
+	config, err := readConfig(f.config)
+	must(t, err)
+	if config.selected("home/one", false) || !config.selected("home/two", false) {
+		t.Fatal("forget did not update the scoped selection")
+	}
+	for _, pattern := range config.Targets.Patterns {
+		if pattern == "~/one" {
+			t.Fatal("forget retained the literal selection")
+		}
+	}
+	original, err := os.ReadFile(filepath.Join(f.home, "one"))
+	must(t, err)
+	if string(original) != "one" {
+		t.Fatal("forget changed the installed original")
 	}
 	b, err := os.ReadFile(f.config)
 	must(t, err)
@@ -282,46 +297,46 @@ func TestConfigSymlinkAndIdempotence(t *testing.T) {
 	f.config = link
 	file := filepath.Join(f.home, "file")
 	f.write(file, "data")
-	c, o, e := f.run("add", file)
+	c, o, e := f.run("track", file)
 	requireCode(t, 0, c, o, e)
 	before, err := os.ReadFile(link)
 	must(t, err)
 	info, err := os.Stat(link)
 	must(t, err)
-	c, o, e = f.run("add", file)
+	c, o, e = f.run("track", file)
 	requireCode(t, 0, c, o, e)
 	after, err := os.ReadFile(link)
 	must(t, err)
 	now, err := os.Stat(link)
 	must(t, err)
 	if !bytes.Equal(before, after) || !info.ModTime().Equal(now.ModTime()) {
-		t.Fatal("repeat add changed config")
+		t.Fatal("repeat track changed config")
 	}
 	linfo, err := os.Lstat(link)
 	must(t, err)
 	if linfo.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("replaced config symlink")
 	}
-	c, o, e = f.run("del", file)
+	c, o, e = f.run("forget", file)
 	requireCode(t, 0, c, o, e)
 	before, err = os.ReadFile(link)
 	must(t, err)
-	c, o, e = f.run("del", file)
+	c, o, e = f.run("forget", file)
 	requireCode(t, 0, c, o, e)
 	after, err = os.ReadFile(link)
 	must(t, err)
 	if !bytes.Equal(before, after) {
-		t.Fatal("repeat delete changed config")
+		t.Fatal("repeat forget changed config")
 	}
 }
-func TestDirectoryAddRetainsExclusions(t *testing.T) {
+func TestDirectoryTrackRetainsExclusions(t *testing.T) {
 	f := setup(t, "!~/settings/private/")
 	f.write(filepath.Join(f.home, "settings/public"), "yes")
 	f.write(filepath.Join(f.home, "settings/private/file"), "no")
-	c, o, e := f.run("add", filepath.Join(f.home, "settings"))
+	c, o, e := f.run("track", filepath.Join(f.home, "settings"))
 	requireCode(t, 0, c, o, e)
 	if exists(filepath.Join(f.vault, "home/settings/private/file")) {
-		t.Fatal("add overrode exclusion")
+		t.Fatal("track overrode exclusion")
 	}
 }
 func TestQuotedAndDottedTOMLPolicy(t *testing.T) {
@@ -331,7 +346,7 @@ func TestQuotedAndDottedTOMLPolicy(t *testing.T) {
 			raw := []byte("# retain\nvault = " + quote(f.vault) + "\n" + policy + "\n")
 			f.write(f.config, string(raw))
 			f.write(filepath.Join(f.home, "three"), "data")
-			c, o, e := f.run("add", filepath.Join(f.home, "three"))
+			c, o, e := f.run("track", filepath.Join(f.home, "three"))
 			requireCode(t, 0, c, o, e)
 			b, err := os.ReadFile(f.config)
 			must(t, err)
@@ -365,7 +380,7 @@ func TestIncomingDeletionRequiresDeliberateRemoval(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 }
 
-func TestScopedAddDoesNotInspectUnrelatedSelection(t *testing.T) {
+func TestScopedTrackDoesNotInspectUnrelatedSelection(t *testing.T) {
 	f := setup(t, "~/other/")
 	f.write(filepath.Join(f.home, "other/file"), "before")
 	c, o, e := f.run("snapshot")
@@ -373,12 +388,12 @@ func TestScopedAddDoesNotInspectUnrelatedSelection(t *testing.T) {
 	must(t, os.RemoveAll(filepath.Join(f.home, "other")))
 	must(t, os.Symlink(f.vault, filepath.Join(f.home, "other")))
 	f.write(filepath.Join(f.home, "new"), "new")
-	c, o, e = f.run("add", filepath.Join(f.home, "new"))
+	c, o, e = f.run("track", filepath.Join(f.home, "new"))
 	requireCode(t, 0, c, o, e)
 	b, err := os.ReadFile(filepath.Join(f.vault, "home/other/file"))
 	must(t, err)
 	if string(b) != "before" {
-		t.Fatal("scoped add changed unrelated capture")
+		t.Fatal("scoped track changed unrelated capture")
 	}
 }
 
@@ -400,13 +415,13 @@ func TestTrailingSpacesAndLiteralBracketClasses(t *testing.T) {
 	}
 }
 
-func TestAddMissingPolicyArray(t *testing.T) {
+func TestTrackMissingPolicyArray(t *testing.T) {
 	for _, suffix := range []string{"", "[targets] # selection table\n"} {
 		t.Run(suffix, func(t *testing.T) {
 			f := setup(t)
 			f.write(f.config, "vault = "+quote(f.vault)+"\n"+suffix)
 			f.write(filepath.Join(f.home, "file"), "data")
-			c, o, e := f.run("add", filepath.Join(f.home, "file"))
+			c, o, e := f.run("track", filepath.Join(f.home, "file"))
 			requireCode(t, 0, c, o, e)
 			c, o, e = f.run("verify")
 			requireCode(t, 0, c, o, e)
@@ -449,5 +464,90 @@ func TestNamespaceRootHelpers(t *testing.T) {
 	}
 	if _, e := compile("~/", "/home/person", "/vault"); e == nil {
 		t.Fatal("selected home root")
+	}
+}
+
+func TestTrackingCommandNames(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run([]string{"--help"}, &out, &errOut)
+	requireCode(t, 0, code, out.String(), errOut.String())
+	if !strings.Contains(out.String(), "track PATH") || !strings.Contains(out.String(), "forget PATH") || strings.Contains(out.String(), "add PATH") || strings.Contains(out.String(), "del PATH") {
+		t.Fatal("help does not describe the current commands")
+	}
+	for _, old := range []string{"add", "del"} {
+		out.Reset()
+		errOut.Reset()
+		code = Run([]string{old, "unused"}, &out, &errOut)
+		requireCode(t, 2, code, out.String(), errOut.String())
+		if !strings.Contains(errOut.String(), "unknown command: "+old) {
+			t.Fatalf("legacy command %s was accepted", old)
+		}
+	}
+}
+
+func TestDiffTargetScope(t *testing.T) {
+	f := setup(t, "~/settings/", "~/settings-extra/", "~/unchanged")
+	first := filepath.Join(f.home, "settings/first")
+	nested := filepath.Join(f.home, "settings/nested/second")
+	sibling := filepath.Join(f.home, "settings-extra/file")
+	unchanged := filepath.Join(f.home, "unchanged")
+	for _, p := range []string{first, nested, sibling, unchanged} {
+		f.write(p, "before\n")
+	}
+	c, o, e := f.run("snapshot")
+	requireCode(t, 0, c, o, e)
+	for _, p := range []string{first, nested, sibling} {
+		f.write(p, "after\n")
+	}
+	t.Chdir(f.home)
+	c, o, e = f.run("diff", "settings/first")
+	requireCode(t, 1, c, o, e)
+	if !strings.Contains(o, "different: "+first) || strings.Contains(o, nested) || strings.Contains(o, sibling) {
+		t.Fatal("file scope: " + o)
+	}
+	c, o, e = f.run("diff", "~/settings")
+	requireCode(t, 1, c, o, e)
+	if !strings.Contains(o, "different: "+first) || !strings.Contains(o, "different: "+nested) || strings.Contains(o, sibling) {
+		t.Fatal("directory scope: " + o)
+	}
+	c, o, e = f.run("diff", unchanged)
+	requireCode(t, 0, c, o, e)
+	if o != "" {
+		t.Fatal("unchanged scope: " + o)
+	}
+	c, o, e = f.run("diff")
+	requireCode(t, 1, c, o, e)
+	for _, p := range []string{first, nested, sibling} {
+		if !strings.Contains(o, "different: "+p) {
+			t.Fatal("full diff omitted " + p)
+		}
+	}
+	must(t, os.Remove(first))
+	c, o, e = f.run("diff", first)
+	requireCode(t, 1, c, o, e)
+	if !strings.Contains(o, "missing installed: "+first) || strings.Contains(o, sibling) {
+		t.Fatal("missing scoped copy: " + o)
+	}
+}
+func TestDiffTargetValidation(t *testing.T) {
+	f := setup(t)
+	for _, args := range [][]string{{"diff", "one", "two"}, {"diff", ""}, {"diff", f.home}, {"diff", f.vault}, {"diff", "/"}} {
+		c, o, e := f.run(args...)
+		requireCode(t, 2, c, o, e)
+	}
+}
+func TestScopedDiffIgnoresUnrelatedUnsafePayload(t *testing.T) {
+	f := setup(t, "~/file", "~/outside/")
+	file := filepath.Join(f.home, "file")
+	f.write(file, "same")
+	f.write(filepath.Join(f.home, "outside/copy"), "same")
+	c, o, e := f.run("snapshot")
+	requireCode(t, 0, c, o, e)
+	must(t, os.RemoveAll(filepath.Join(f.vault, "home/outside")))
+	must(t, os.Symlink(f.home, filepath.Join(f.vault, "home/outside")))
+	c, o, e = f.run("diff", file)
+	requireCode(t, 0, c, o, e)
+	if o != "" {
+		t.Fatal(o)
 	}
 }

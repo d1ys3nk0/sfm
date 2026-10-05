@@ -26,12 +26,12 @@ patterns = [
 | `snapshot [--dry]` | Capture selected files; remove captured children deliberately deleted under an existing source directory. |
 | `snapshot --dry --json` | Print an immutable preview as `{"entries": {"home/path": {"type": "file", "mode": 384, "hash": "…"}, "home/deleted": null}}`, including the `.sfm.json` fingerprint when it changes. |
 | `install [--dry] [--force]` | Create missing files; force replaces differing content, permissions, and link targets. Type conflicts fail. |
-| `diff` | Compare payloads and permissions, including unified text differences and binary summaries. |
+| `diff [PATH]` | Compare all selected payloads and permissions, or only the given file/directory subtree, including unified text differences and binary summaries. |
 | `verify` | Check missing selection roots, unexpected payloads, and metadata integrity. |
-| `add PATH` | Add a literal selection and capture that subtree transactionally. Directory exclusions remain effective. |
-| `del PATH` | Remove scoped literal selections, add an exclusion when needed, and remove that captured subtree. Installed source files remain in place. |
+| `track PATH` | Add a literal selection and capture that subtree transactionally. Directory exclusions remain effective. |
+| `forget PATH` | Remove scoped literal selections, add an exclusion when needed, and remove that captured subtree. Installed source files remain in place. |
 
-Use `--config FILE` anywhere to select configuration. `--help` and `--version` work without configuration. Exit codes are 0 for success, 1 for differences or verification findings, and 2 for errors.
+An optional `diff` target accepts an absolute path, a path relative to the current directory, or a home-relative path beginning with `~/`. Directory targets include descendants, and the exit status reflects only that scope. The filesystem root, home directory itself, and vault are rejected as targets; omit `PATH` for a full comparison. Use `--config FILE` anywhere to select configuration. `--help` and `--version` work without configuration. Exit codes are 0 for success, 1 for differences or verification findings, and 2 for errors.
 
 ## Selection and safety
 
