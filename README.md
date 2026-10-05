@@ -4,7 +4,7 @@ SFM captures selected files in a filesystem vault and installs them on another m
 
 ## Quick start
 
-Install Go 1.27.1 and Task, then run `task build`. The executable is `bin/sfm`.
+Install Go 1.27.1, then run `make build`. The executable is `bin/sfm`.
 
 Create `~/.config/sfm/config.toml` using [the example](examples/config.toml). Use `sfm snapshot --dry` to preview a capture, `sfm snapshot` to apply it, and `sfm diff` to compare installed files. On another machine, `sfm install` creates missing files; `sfm install --force` replaces existing files of the same type after review.
 
@@ -53,6 +53,6 @@ The state is local to each checkout and machine. It records acknowledged filesys
 
 ## Development
 
-Run `task check` for check-only pre-commit lint hooks, module consistency, race tests, vulnerability scanning, and secret scanning. `make lint` runs manual fixers followed by checks; `make lint-chk` runs check hooks only. CI invokes the underlying Go tools directly. `task fix:format` formats Go sources. `task build` produces a trimmed binary with version and revision metadata. Install local lint hooks with `pre-commit install`; see [CONTRIBUTING](CONTRIBUTING.md).
+Run `make check` for check-only pre-commit lint hooks, module consistency, race tests, vulnerability scanning, and secret scanning. `make lint` runs manual fixers followed by checks; `make lint-chk` runs check hooks only. CI invokes the underlying Go tools directly. `make lint-fix` formats Go sources. `make build` produces a trimmed binary with version and revision metadata. Install local lint hooks with `pre-commit install`; see [CONTRIBUTING](CONTRIBUTING.md).
 
 SFM is licensed under [MIT](LICENSE).
