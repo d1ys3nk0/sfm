@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: go-format
+        name: Go formatting
+        stages: [pre-commit]
+        entry: make lint-format
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: go-vet
+        name: Go static analysis
+        stages: [pre-commit]
+        entry: make lint-vet
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: go-format-fix
+        name: Format Go sources
+        entry: gofmt -w
+        language: system
+        types: [go]
+        stages: [manual]

@@ -1,0 +1,9 @@
+# Keep your real configuration outside the source repository.
+vault = "~/file-vault"
+
+[targets]
+patterns = [
+  "~/.config/editor/",
+  "!~/.config/editor/cache/",
+  "~/notes/**/*.md",
+]
