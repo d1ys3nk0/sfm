@@ -19,9 +19,8 @@ type Entry struct {
 	Link string `json:"link,omitempty"`
 }
 type Record struct {
-	Version  int              `json:"version"`
-	Entries  map[string]Entry `json:"entries"`
-	Metadata map[string]Entry `json:"metadata"`
+	Version int              `json:"version"`
+	Entries map[string]Entry `json:"entries"`
 }
 
 func safe(path string) error {
@@ -98,18 +97,11 @@ func atomic(path string, b []byte, mode uint32) error {
 	return os.Rename(f.Name(), path)
 }
 func encoded(r Record) []byte {
-	var value any = r
-	if r.Metadata == nil {
-		value = struct {
-			Version int              `json:"version"`
-			Entries map[string]Entry `json:"entries"`
-		}{r.Version, r.Entries}
-	}
-	b, _ := json.MarshalIndent(value, "", "  ")
+	b, _ := json.MarshalIndent(r, "", "  ")
 	return append(b, '\n')
 }
-func readRecord(path string, baseline bool) (Record, error) {
-	r := Record{Version: 2, Entries: map[string]Entry{}}
+func readRecord(path string) (Record, error) {
+	r := Record{Version: 3, Entries: map[string]Entry{}}
 	if !exists(path) {
 		return r, nil
 	}
@@ -118,25 +110,31 @@ func readRecord(path string, baseline bool) (Record, error) {
 		return r, e
 	}
 	if !s.Mode().IsRegular() {
-		return r, fmt.Errorf("control file must be regular: %s", path)
+		return r, fmt.Errorf("baseline must be regular: %s", path)
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
 		return r, e
+	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if e = json.Unmarshal(b, &header); e != nil {
+		return r, e
+	}
+	if header.Version != 3 {
+		return r, fmt.Errorf("unsupported baseline version %d: %s; migrate the vault layout and local baseline to version 3 before continuing", header.Version, path)
 	}
 	d := json.NewDecoder(strings.NewReader(string(b)))
 	d.DisallowUnknownFields()
 	if e = d.Decode(&r); e != nil {
 		return r, e
 	}
-	if r.Version != 2 || r.Entries == nil {
-		return r, fmt.Errorf("unsupported metadata: %s", path)
+	if r.Entries == nil {
+		return r, fmt.Errorf("baseline entries missing: %s", path)
 	}
 	if e = d.Decode(new(any)); e != io.EOF {
-		return r, fmt.Errorf("trailing metadata content: %s", path)
-	}
-	if baseline && r.Metadata == nil {
-		return r, fmt.Errorf("baseline metadata missing")
+		return r, fmt.Errorf("trailing baseline content: %s", path)
 	}
 	return r, nil
 }

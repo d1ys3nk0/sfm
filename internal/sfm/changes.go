@@ -47,7 +47,7 @@ func (o observed) check() error {
 
 func (m *manager) observeControls() (observed, error) {
 	o := observed{}
-	for _, p := range []string{m.c.source, filepath.Join(m.c.Vault, ".sfm.json"), filepath.Join(m.state, "baseline.json")} {
+	for _, p := range []string{m.c.source, filepath.Join(m.state, "baseline.json")} {
 		if e := o.add(p); e != nil {
 			return nil, e
 		}
@@ -71,4 +71,21 @@ func approve(in *bufio.Reader, out io.Writer, path string) (bool, error) {
 			fmt.Fprintln(out, "Please enter y or n.")
 		}
 	}
+}
+
+// Check the complete payload inventory as well, including paths added while asking.
+func (m *manager) checkVault(before map[string]Entry) error {
+	now, e := m.vaultEntries()
+	if e != nil {
+		return e
+	}
+	if len(now) != len(before) {
+		return fmt.Errorf("vault changed during operation")
+	}
+	for n, d := range before {
+		if now[n] != d {
+			return fmt.Errorf("vault changed during operation: %s", n)
+		}
+	}
+	return nil
 }

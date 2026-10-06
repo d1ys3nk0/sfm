@@ -27,7 +27,6 @@ func TestInstallPreviewAllChanges(t *testing.T) {
 	must(t, os.Remove(filepath.Join(f.home, "new")))
 	f.write(filepath.Join(f.home, "changed"), "local\n")
 	must(t, os.RemoveAll(f.state))
-	meta := readText(t, filepath.Join(f.vault, ".sfm.json"))
 	for _, content := range []bool{false, true} {
 		args := []string{"install", "--dry"}
 		if content {
@@ -44,7 +43,7 @@ func TestInstallPreviewAllChanges(t *testing.T) {
 		if content && (!strings.Contains(o, "-local\n+saved\n") || !strings.Contains(o, "--- /dev/null") || !strings.Contains(o, "+saved")) {
 			t.Fatal(o)
 		}
-		if exists(filepath.Join(f.home, "new")) || exists(f.state) || readText(t, filepath.Join(f.home, "changed")) != "local\n" || readText(t, filepath.Join(f.vault, ".sfm.json")) != meta {
+		if exists(filepath.Join(f.home, "new")) || exists(f.state) || readText(t, filepath.Join(f.home, "changed")) != "local\n" || exists(filepath.Join(f.vault, ".sfm.json")) {
 			t.Fatal("preview mutated filesystem")
 		}
 	}
@@ -62,7 +61,7 @@ func TestInstallApprovalAndReconciliation(t *testing.T) {
 	baseline := filepath.Join(state, "baseline.json")
 	before := readText(t, baseline)
 	for _, n := range []string{"a", "b"} {
-		f.write(filepath.Join(f.vault, "home", n), "incoming\n")
+		f.write(filepath.Join(f.vault, n), "incoming\n")
 	}
 	must(t, os.Remove(filepath.Join(f.home, "new")))
 	c, o, e = f.runInput("invalid\nY\nN\n", "install", "--diff")
@@ -129,7 +128,7 @@ func TestInstallInputFailureAbortsAllWrites(t *testing.T) {
 }
 
 func TestInstallRevalidatesAfterInput(t *testing.T) {
-	for _, target := range []string{"destination", "new destination", "source", "unchanged source", "metadata", "baseline", "config"} {
+	for _, target := range []string{"destination", "new destination", "source", "unchanged source", "new payload", "baseline", "config"} {
 		t.Run(target, func(t *testing.T) {
 			f := setup(t, "~/file", "~/new", "~/same")
 			for _, n := range []string{"file", "new", "same"} {
@@ -141,7 +140,7 @@ func TestInstallRevalidatesAfterInput(t *testing.T) {
 			must(t, os.Remove(filepath.Join(f.home, "new")))
 			state, err := StateDir(f.vault)
 			must(t, err)
-			paths := map[string]string{"destination": filepath.Join(f.home, "file"), "new destination": filepath.Join(f.home, "new"), "source": filepath.Join(f.vault, "home/file"), "unchanged source": filepath.Join(f.vault, "home/same"), "metadata": filepath.Join(f.vault, ".sfm.json"), "baseline": filepath.Join(state, "baseline.json"), "config": f.config}
+			paths := map[string]string{"destination": filepath.Join(f.home, "file"), "new destination": filepath.Join(f.home, "new"), "source": filepath.Join(f.vault, "file"), "unchanged source": filepath.Join(f.vault, "same"), "new payload": filepath.Join(f.vault, ".sfm.json"), "baseline": filepath.Join(state, "baseline.json"), "config": f.config}
 			input := readFunc(func(p []byte) (int, error) { f.write(paths[target], "other writer"); return copy(p, "y\n"), nil })
 			var out bytes.Buffer
 			_, err = runWithInput([]string{"--config", f.config, "install"}, input, &out)
@@ -201,12 +200,12 @@ func TestSnapshotDiffAutomaticAndDeletion(t *testing.T) {
 			t.Fatal(o)
 		}
 	}
-	if readText(t, filepath.Join(f.vault, "home/dir/file")) != "before\n" || !exists(filepath.Join(f.vault, "home/dir/deleted")) {
+	if readText(t, filepath.Join(f.vault, "dir/file")) != "before\n" || !exists(filepath.Join(f.vault, "dir/deleted")) {
 		t.Fatal("preview wrote")
 	}
 	c, o, e = f.runInput("", "snapshot", "--diff")
 	requireCode(t, 0, c, o, e)
-	if strings.Contains(o, "[y/n]") || readText(t, filepath.Join(f.vault, "home/dir/file")) != "after" || exists(filepath.Join(f.vault, "home/dir/deleted")) {
+	if strings.Contains(o, "[y/n]") || readText(t, filepath.Join(f.vault, "dir/file")) != "after" || exists(filepath.Join(f.vault, "dir/deleted")) {
 		t.Fatal(o)
 	}
 }

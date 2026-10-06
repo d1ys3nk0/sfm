@@ -73,7 +73,7 @@ func TestSnapshotInstallReconcile(t *testing.T) {
 	must(t, os.Symlink("config", filepath.Join(f.home, "settings/link")))
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	saved := filepath.Join(f.vault, "home/settings/config")
+	saved := filepath.Join(f.vault, "settings/config")
 	b, err := os.ReadFile(saved)
 	must(t, err)
 	if string(b) != "first\n" {
@@ -113,7 +113,7 @@ func TestDryRunNoMutation(t *testing.T) {
 	if !strings.Contains(o, "--- /dev/null") || !strings.Contains(o, "+payload") || strings.Contains(o, ".sfm.json") {
 		t.Fatal(o)
 	}
-	if exists(f.state) || exists(filepath.Join(f.vault, "home")) || exists(filepath.Join(f.vault, ".sfm.json")) {
+	if exists(f.state) || exists(filepath.Join(f.vault, "file")) || exists(filepath.Join(f.vault, ".sfm.json")) {
 		t.Fatal("dry run wrote files")
 	}
 	c, o, e = f.run("snapshot")
@@ -142,7 +142,7 @@ func TestOrderedExclusions(t *testing.T) {
 	f.write(filepath.Join(f.home, "settings/private/public"), "yes")
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	if exists(filepath.Join(f.vault, "home/settings/private/secret")) || !exists(filepath.Join(f.vault, "home/settings/private/public")) {
+	if exists(filepath.Join(f.vault, "settings/private/secret")) || !exists(filepath.Join(f.vault, "settings/private/public")) {
 		t.Fatal("ordered selection")
 	}
 }
@@ -154,7 +154,7 @@ func TestMissingRootPreservesCapture(t *testing.T) {
 	must(t, os.RemoveAll(filepath.Join(f.home, "settings")))
 	c, o, e = f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	if !exists(filepath.Join(f.vault, "home/settings/file")) {
+	if !exists(filepath.Join(f.vault, "settings/file")) {
 		t.Fatal("missing root deleted capture")
 	}
 }
@@ -168,7 +168,7 @@ func TestTrackForgetAndComments(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 	c, o, e = f.run("forget", filepath.Join(f.home, "one"))
 	requireCode(t, 0, c, o, e)
-	if exists(filepath.Join(f.vault, "home/one")) || !exists(filepath.Join(f.vault, "home/two")) || !exists(filepath.Join(f.home, "one")) {
+	if exists(filepath.Join(f.vault, "one")) || !exists(filepath.Join(f.vault, "two")) || !exists(filepath.Join(f.home, "one")) {
 		t.Fatal("scope or source mutation")
 	}
 	config, err := readConfig(f.config)
@@ -199,11 +199,13 @@ func TestEmptyBaseline(t *testing.T) {
 		requireCode(t, 0, c, o, e)
 	}
 }
-func TestUnsafeMetadata(t *testing.T) {
+func TestUnsafeBaseline(t *testing.T) {
 	f := setup(t)
-	f.write(filepath.Join(f.vault, ".sfm.json"), `{"version":2,"entries":{"home/..":{"type":"dir","mode":448}}}`)
-	c, o, e := f.run("install")
-	requireCode(t, 2, c, o, e)
+	state, e := StateDir(f.vault)
+	must(t, e)
+	f.write(filepath.Join(state, "baseline.json"), `{"version":3,"entries":{"home/..":{"type":"dir","mode":448}}}`)
+	c, o, errOut := f.run("install")
+	requireCode(t, 2, c, o, errOut)
 }
 func TestSymlinkAncestorAndTypeConflict(t *testing.T) {
 	f := setup(t, "~/settings/file")
@@ -335,7 +337,7 @@ func TestDirectoryTrackRetainsExclusions(t *testing.T) {
 	f.write(filepath.Join(f.home, "settings/private/file"), "no")
 	c, o, e := f.run("track", filepath.Join(f.home, "settings"))
 	requireCode(t, 0, c, o, e)
-	if exists(filepath.Join(f.vault, "home/settings/private/file")) {
+	if exists(filepath.Join(f.vault, "settings/private/file")) {
 		t.Fatal("track overrode exclusion")
 	}
 }
@@ -365,7 +367,7 @@ func TestIncomingDeletionRequiresDeliberateRemoval(t *testing.T) {
 	f.write(file, "one")
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	must(t, os.Remove(filepath.Join(f.vault, "home/settings/file")))
+	must(t, os.Remove(filepath.Join(f.vault, "settings/file")))
 	c, o, e = f.run("install", "--force")
 	requireCode(t, 0, c, o, e)
 	if !exists(file) {
@@ -393,7 +395,7 @@ func TestScopedTrackDoesNotInspectUnrelatedSelection(t *testing.T) {
 	f.write(filepath.Join(f.home, "new"), "new")
 	c, o, e = f.run("track", filepath.Join(f.home, "new"))
 	requireCode(t, 0, c, o, e)
-	b, err := os.ReadFile(filepath.Join(f.vault, "home/other/file"))
+	b, err := os.ReadFile(filepath.Join(f.vault, "other/file"))
 	must(t, err)
 	if string(b) != "before" {
 		t.Fatal("scoped track changed unrelated capture")
@@ -445,13 +447,15 @@ func TestTopLevelWildcardStaysInNamespace(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(sibling, 0700) })
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	if !exists(filepath.Join(f.vault, "home/selected.txt")) {
+	if !exists(filepath.Join(f.vault, "selected.txt")) {
 		t.Fatal("missing top-level match")
 	}
-	metadata, err := readRecord(filepath.Join(f.vault, ".sfm.json"), false)
+	state, err := StateDir(f.vault)
 	must(t, err)
-	if len(metadata.Entries) != 1 {
-		t.Fatalf("captured outside namespace: %v", metadata.Entries)
+	baseline, err := readRecord(filepath.Join(state, "baseline.json"))
+	must(t, err)
+	if len(baseline.Entries) != 1 {
+		t.Fatalf("captured outside namespace: %v", baseline.Entries)
 	}
 }
 func TestNamespaceRootHelpers(t *testing.T) {

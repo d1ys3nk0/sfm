@@ -11,12 +11,12 @@ import (
 )
 
 type manager struct {
-	c          *Config
-	meta, base Record
-	state      string
-	hasBase    bool
-	out        io.Writer
-	color      bool
+	c       *Config
+	base    Record
+	state   string
+	hasBase bool
+	out     io.Writer
+	color   bool
 }
 
 func newManager(c *Config, out io.Writer) (*manager, error) {
@@ -25,62 +25,55 @@ func newManager(c *Config, out io.Writer) (*manager, error) {
 		return nil, e
 	}
 	m := &manager{c: c, state: s, out: out, hasBase: exists(filepath.Join(s, "baseline.json"))}
-	m.meta, e = readRecord(filepath.Join(c.Vault, ".sfm.json"), false)
+	m.base, e = readRecord(filepath.Join(s, "baseline.json"))
 	if e != nil {
 		return nil, e
 	}
-	m.base, e = readRecord(filepath.Join(s, "baseline.json"), true)
-	if e != nil {
-		return nil, e
-	}
-	for _, record := range []Record{m.meta, m.base} {
-		for n, d := range record.Entries {
-			if _, e = c.destination(n); e != nil {
-				return nil, e
-			}
-			if d.Type != "file" && d.Type != "dir" && d.Type != "link" || d.Mode > 07777 {
-				return nil, fmt.Errorf("invalid metadata entry: %s", n)
-			}
+	for n, d := range m.base.Entries {
+		if _, e = c.destination(n); e != nil {
+			return nil, e
+		}
+		if d.Type != "file" && d.Type != "dir" && d.Type != "link" || d.Mode > 07777 {
+			return nil, fmt.Errorf("invalid baseline entry: %s", n)
 		}
 	}
 	return m, nil
 }
 func (m *manager) vaultEntries() (map[string]Entry, error) {
 	v := map[string]Entry{}
-	for _, ns := range []string{"home", "root"} {
-		p := filepath.Join(m.c.Vault, ns)
-		if !exists(p) {
-			continue
-		}
-		s, e := os.Lstat(p)
-		if e != nil {
-			return nil, e
-		}
-		if !s.IsDir() || s.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("vault namespace must be a directory: %s", ns)
-		}
-		if e = scanTree(p, func(path string, d Entry) error {
-			if path != p {
-				n, e := filepath.Rel(m.c.Vault, path)
-				if e != nil {
-					return e
-				}
-				v[n] = d
+	if !exists(m.c.Vault) {
+		return v, nil
+	}
+	e := scanTree(m.c.Vault, func(path string, d Entry) error {
+		if path == m.c.Vault {
+			if d.Type != "dir" {
+				return fmt.Errorf("vault must be a real directory")
 			}
 			return nil
-		}); e != nil {
-			return nil, e
 		}
-	}
-	return v, nil
+		rel, e := filepath.Rel(m.c.Vault, path)
+		if e != nil {
+			return e
+		}
+		if rel == "_" {
+			if d.Type != "dir" {
+				return fmt.Errorf("vault _ must be a real directory")
+			}
+			return nil
+		}
+		name, e := m.c.vaultName(path)
+		if e != nil {
+			return e
+		}
+		v[name] = d
+		return nil
+	})
+	return v, e
 }
 func (m *manager) selected(v map[string]Entry) map[string]Entry {
 	result := map[string]Entry{}
 	for n, d := range v {
 		if m.c.selected(n, d.Type == "dir") {
-			if saved, ok := m.meta.Entries[n]; ok {
-				d.Mode = saved.Mode
-			}
 			result[n] = d
 		}
 	}
@@ -162,6 +155,9 @@ func (c *Config) roots() ([]string, []string, error) {
 			warnings = append(warnings, "missing or invalid target: "+r.literal)
 		}
 		for _, p := range found {
+			if _, e := c.destination(c.name(p)); e != nil {
+				return nil, nil, e
+			}
 			if within(p, c.Vault) || within(c.Vault, p) {
 				return nil, nil, fmt.Errorf("target selects vault: %s", p)
 			}
@@ -215,6 +211,9 @@ func (m *manager) sourceEntriesScope(scope string) (map[string]Entry, []string, 
 			if !m.c.selected(n, info.IsDir()) {
 				return nil
 			}
+			if _, e := m.c.destination(n); e != nil {
+				return e
+			}
 			d, e := entry(p)
 			if e != nil {
 				return e
@@ -237,7 +236,7 @@ func (m *manager) reconcile(v map[string]Entry, scope string) error {
 			continue
 		}
 		physical := v[n]
-		if old, ok := m.base.Entries[n]; !ok || old != physical || m.base.Metadata[n] != m.meta.Entries[n] {
+		if old, ok := m.base.Entries[n]; !ok || old != physical {
 			p, _ := m.c.destination(n)
 			current, e := entry(p)
 			if e != nil || current != d {
@@ -308,7 +307,6 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 			}
 		}
 	}
-	updated := clone(m.meta.Entries)
 	future := clone(old)
 	remove := map[string]Entry{}
 	for n, d := range old {
@@ -343,13 +341,13 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 		}
 	}
 	for n := range old {
-		if e = observations.add(filepath.Join(m.c.Vault, n)); e != nil {
+		if e = observations.add(m.c.vaultPath(n)); e != nil {
 			return e
 		}
 	}
 	for n := range desired {
 		p, _ := m.c.destination(n)
-		for _, path := range []string{p, filepath.Join(m.c.Vault, n)} {
+		for _, path := range []string{p, m.c.vaultPath(n)} {
 			if e = observations.add(path); e != nil {
 				return e
 			}
@@ -363,12 +361,11 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	}
 	actions := append([]action{}, extra...)
 	for _, n := range sorted(remove, true) {
-		actions = append(actions, action{path: filepath.Join(m.c.Vault, n)})
-		delete(updated, n)
+		actions = append(actions, action{path: m.c.vaultPath(n)})
 		delete(future, n)
-		fmt.Fprintln(m.out, "delete "+n)
+		fmt.Fprintln(m.out, "delete "+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 		d := remove[n]
-		if e = m.describeChange(filepath.Join(m.c.Vault, n), "", &d, nil, nil, showDiff); e != nil {
+		if e = m.describeChange(m.c.vaultPath(n), "", &d, nil, nil, showDiff); e != nil {
 			return e
 		}
 	}
@@ -385,54 +382,49 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 				return e
 			}
 			copyD := d
-			actions = append(actions, action{filepath.Join(m.c.Vault, n), &copyD, b})
+			actions = append(actions, action{m.c.vaultPath(n), &copyD, b})
 			verb := "create "
 			if ok {
 				verb = "replace "
 			}
-			fmt.Fprintln(m.out, verb+n)
+			fmt.Fprintln(m.out, verb+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 			var previous *Entry
 			if ok {
 				previous = &before
 			}
-			if e = m.describeChange(filepath.Join(m.c.Vault, n), p, previous, &d, b, showDiff); e != nil {
+			if e = m.describeChange(m.c.vaultPath(n), p, previous, &d, b, showDiff); e != nil {
 				return e
 			}
 		}
-		updated[n] = d
 		future[n] = d
 	}
-	meta := Record{Version: 2, Entries: updated}
-	mb := encoded(meta)
-	mp := filepath.Join(m.c.Vault, ".sfm.json")
-	oldMeta, _ := os.ReadFile(mp)
-	if string(oldMeta) != string(mb) {
-		d := bytesEntry(mb)
-		actions = append(actions, action{mp, &d, mb})
+	// Atomic copies create omitted selection ancestors with private modes.
+	// Record these actual payload directories in the private baseline too.
+	for n := range desired {
+		for p := filepath.Dir(m.c.vaultPath(n)); p != m.c.Vault; p = filepath.Dir(p) {
+			parent, e := m.c.vaultName(p)
+			if e != nil {
+				return e
+			}
+			if parent != "" {
+				if _, ok := future[parent]; !ok {
+					future[parent] = Entry{Type: "dir", Mode: 0700}
+				}
+			}
+		}
 	}
-	base := Record{Version: 2, Entries: future, Metadata: updated}
-	if scope != "" && m.hasBase {
-		base.Entries = clone(m.base.Entries)
-		base.Metadata = clone(m.base.Metadata)
-		for n := range base.Entries {
-			if within(n, scope) {
+	base := Record{Version: 3, Entries: clone(m.base.Entries)}
+	for n, d := range base.Entries {
+		if (scope == "" || within(n, scope)) && m.c.selected(n, d.Type == "dir") {
+			if _, ok := future[n]; !ok {
 				delete(base.Entries, n)
 			}
 		}
-		for n := range base.Metadata {
-			if within(n, scope) {
-				delete(base.Metadata, n)
-			}
-		}
-		for n, d := range future {
-			if within(n, scope) {
-				base.Entries[n] = d
-			}
-		}
-		for n, d := range updated {
-			if within(n, scope) {
-				base.Metadata[n] = d
-			}
+	}
+	for n, d := range future {
+		_, existed := old[n]
+		if !existed || (scope == "" || within(n, scope)) && m.c.selected(n, d.Type == "dir") {
+			base.Entries[n] = d
 		}
 	}
 	bb := encoded(base)
@@ -453,10 +445,14 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	if e = observations.check(); e != nil {
 		return e
 	}
+	if e = m.checkVault(old); e != nil {
+		return e
+	}
 	if e = apply(actions); e != nil {
 		return e
 	}
-	m.meta = meta
+	m.base = base
+	m.hasBase = true
 	return nil
 }
 func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
@@ -468,7 +464,7 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	if e != nil {
 		return e
 	}
-	selected := m.selected(v)
+	selected := v
 	type change struct {
 		name   string
 		action action
@@ -477,7 +473,7 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	var changes []change
 	// Freeze every source and destination before displaying or asking anything.
 	for _, n := range sorted(v, false) {
-		if e = observations.add(filepath.Join(m.c.Vault, n)); e != nil {
+		if e = observations.add(m.c.vaultPath(n)); e != nil {
 			return e
 		}
 	}
@@ -496,7 +492,7 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 				continue
 			}
 		}
-		b, e := payload(filepath.Join(m.c.Vault, n), v[n])
+		b, e := payload(m.c.vaultPath(n), v[n])
 		if e != nil {
 			return e
 		}
@@ -505,8 +501,7 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	}
 	matched := true
 	for _, n := range sorted(m.base.Entries, false) {
-		d := m.base.Entries[n]
-		if _, ok := v[n]; !ok && m.c.selected(n, d.Type == "dir") {
+		if _, ok := v[n]; !ok {
 			p, _ := m.c.destination(n)
 			if e = observations.add(p); e != nil {
 				return e
@@ -525,7 +520,7 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 			verb = "replace "
 		}
 		fmt.Fprintln(m.out, verb+ch.action.path)
-		if e = m.describeChange(ch.action.path, filepath.Join(m.c.Vault, ch.name), ch.before, ch.action.want, ch.action.data, showDiff); e != nil {
+		if e = m.describeChange(ch.action.path, m.c.vaultPath(ch.name), ch.before, ch.action.want, ch.action.data, showDiff); e != nil {
 			return e
 		}
 		if !dry && !force && ch.before != nil {
@@ -545,48 +540,21 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 		return nil
 	}
 	if matched {
-		b := encoded(Record{Version: 2, Entries: v, Metadata: m.meta.Entries})
+		b := encoded(Record{Version: 3, Entries: v})
 		d := bytesEntry(b)
 		actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &d, b})
 	}
 	if e = observations.check(); e != nil {
 		return e
 	}
+	if e = m.checkVault(v); e != nil {
+		return e
+	}
 	return apply(actions)
 }
 func (m *manager) inspect() (int, error) {
-	v, e := m.vaultEntries()
-	if e != nil {
+	if _, e := m.vaultEntries(); e != nil {
 		return 2, e
-	}
-	_, _, warnings, e := m.sourceEntries()
-	if e != nil {
-		return 2, e
-	}
-	findings := false
-	for _, w := range warnings {
-		fmt.Fprintln(m.out, "WARNING "+w)
-		findings = true
-	}
-	for _, n := range sorted(v, false) {
-		d := v[n]
-		if d.Type != "dir" && !m.c.selected(n, false) {
-			fmt.Fprintln(m.out, "unselected vault entry: "+n)
-			findings = true
-		}
-		if saved, ok := m.meta.Entries[n]; ok && (saved.Type != d.Type || saved.Hash != d.Hash || saved.Link != d.Link) {
-			fmt.Fprintln(m.out, "metadata mismatch: "+n)
-			findings = true
-		}
-	}
-	for _, n := range sorted(m.meta.Entries, false) {
-		if _, ok := v[n]; !ok {
-			fmt.Fprintln(m.out, "missing metadata payload: "+n)
-			findings = true
-		}
-	}
-	if findings {
-		return 1, nil
 	}
 	fmt.Fprintln(m.out, "Verification passed")
 	return 0, nil

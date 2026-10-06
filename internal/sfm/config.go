@@ -114,7 +114,7 @@ func compile(raw, home, vault string) (*rule, error) {
 	} else if strings.HasPrefix(s, "/") {
 		r.ns = "root"
 		s = s[1:]
-		if strings.HasPrefix("/"+s, home+"/") {
+		if within("/"+strings.TrimSuffix(s, "/"), home) {
 			return nil, fmt.Errorf("use ~/ for home targets")
 		}
 	}
@@ -196,6 +196,9 @@ func compile(raw, home, vault string) (*rule, error) {
 		if r.ns == "root" {
 			base = "/"
 		}
+		if r.ns == "home" && within(unescape(s), "_") {
+			return nil, fmt.Errorf("reserved home target: %s; ~/_ is reserved for root payloads", raw)
+		}
 		candidate := filepath.Join(base, unescape(s))
 		if within(vault, candidate) || within(candidate, vault) {
 			return nil, fmt.Errorf("target selects vault: %s", raw)
@@ -230,12 +233,15 @@ func (c *Config) name(path string) string {
 }
 func (c *Config) destination(name string) (string, error) {
 	parts := strings.SplitN(name, "/", 2)
-	if len(parts) != 2 || parts[1] == "" || parts[1] == "." || parts[1] == ".." || filepath.Clean(parts[1]) != parts[1] || strings.HasPrefix(parts[1], "/") || strings.HasPrefix(parts[1], "../") {
+	if strings.ContainsAny(name, "\r\n") || len(parts) != 2 || parts[1] == "" || parts[1] == "." || parts[1] == ".." || filepath.Clean(parts[1]) != parts[1] || strings.HasPrefix(parts[1], "/") || strings.HasPrefix(parts[1], "../") {
 		return "", fmt.Errorf("unsafe vault path: %s", name)
 	}
 	base := c.home
 	switch parts[0] {
 	case "home":
+		if within(parts[1], "_") {
+			return "", fmt.Errorf("reserved home target: %s; ~/_ is reserved for root payloads", name)
+		}
 	case "root":
 		base = "/"
 		if within("/"+parts[1], c.home) {
@@ -244,8 +250,40 @@ func (c *Config) destination(name string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid namespace: %s", name)
 	}
-	return filepath.Join(base, parts[1]), nil
+	p := filepath.Join(base, parts[1])
+	if within(p, c.Vault) {
+		return "", fmt.Errorf("vault self-selection: %s", name)
+	}
+	return p, nil
 }
+
+// vaultPath maps validated internal identifiers to the directory-only vault.
+func (c *Config) vaultPath(name string) string {
+	if strings.HasPrefix(name, "home/") {
+		return filepath.Join(c.Vault, strings.TrimPrefix(name, "home/"))
+	}
+	return filepath.Join(c.Vault, "_", strings.TrimPrefix(name, "root/"))
+}
+
+// vaultName is the inverse of vaultPath; empty names are structural directories.
+func (c *Config) vaultName(path string) (string, error) {
+	rel, e := filepath.Rel(c.Vault, path)
+	if e != nil {
+		return "", e
+	}
+	if rel == "." || rel == "_" {
+		return "", nil
+	}
+	name := "home/" + rel
+	if strings.HasPrefix(rel, "_/") {
+		name = "root/" + strings.TrimPrefix(rel, "_/")
+	}
+	if _, e = c.destination(name); e != nil {
+		return "", e
+	}
+	return name, nil
+}
+
 func (c *Config) selected(name string, dir bool) bool {
 	parts := strings.SplitN(name, "/", 2)
 	if len(parts) != 2 {

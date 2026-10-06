@@ -17,7 +17,7 @@ Commands:
   snapshot [--dry] [--diff]   Copy selected files into the vault
   install [--dry] [--diff] [--force]
                             Create missing files; ask before replacing differences
-  verify                    Check selection and metadata integrity
+  verify                    Check vault structure and supported types
   track PATH                Track and capture a file or directory
   forget PATH               Stop tracking a file or directory
 Options: --dry previews without writing; --diff adds content differences
@@ -114,6 +114,9 @@ func runWithInput(args []string, in io.Reader, out io.Writer) (int, error) {
 	if e != nil {
 		return 2, e
 	}
+	if cmd == "verify" {
+		return (&manager{c: c, out: out}).inspect()
+	}
 	state, e := StateDir(c.Vault)
 	if e != nil {
 		return 2, e
@@ -135,8 +138,6 @@ func runWithInput(args []string, in io.Reader, out io.Writer) (int, error) {
 		e = m.snapshot(dry, showDiff, "", nil)
 	case "install":
 		e = m.install(force, dry, showDiff, in)
-	case "verify":
-		return m.inspect()
 	case "track", "forget":
 		e = m.track(positional[1], cmd == "track")
 	}
@@ -148,6 +149,7 @@ func (m *manager) track(value string, adding bool) error {
 		return e
 	}
 	name := m.c.name(p)
+	selectedBefore := map[string]Entry{}
 	if !adding {
 		v, e := m.vaultEntries()
 		if e != nil {
@@ -156,6 +158,7 @@ func (m *manager) track(value string, adding bool) error {
 		if e = m.reconcile(v, name); e != nil {
 			return e
 		}
+		selectedBefore = m.selected(v)
 	}
 	dir := false
 	if exists(p) {
@@ -166,8 +169,16 @@ func (m *manager) track(value string, adding bool) error {
 		dir = d.Type == "dir"
 	} else if adding {
 		return fmt.Errorf("target does not exist: %s", p)
-	} else if saved, ok := m.meta.Entries[name]; ok {
-		dir = saved.Type == "dir"
+	} else {
+		v, e := m.vaultEntries()
+		if e != nil {
+			return e
+		}
+		if saved, ok := v[name]; ok {
+			dir = saved.Type == "dir"
+		} else if saved, ok := m.base.Entries[name]; ok {
+			dir = saved.Type == "dir"
+		}
 	}
 
 	relative := strings.SplitN(name, "/", 2)[1]
@@ -214,36 +225,35 @@ func (m *manager) track(value string, adding bool) error {
 		return e
 	}
 	removed := map[string]Entry{}
-	meta := clone(m.meta.Entries)
-	future := clone(v)
 	for n, d := range v {
-		if within(n, name) {
+		if _, selected := selectedBefore[n]; selected && within(n, name) {
 			removed[n] = d
-			delete(meta, n)
-			delete(future, n)
+		}
+	}
+	// Excluded payloads remain; their containing directories must remain too.
+	for n, d := range removed {
+		if d.Type != "dir" {
+			continue
+		}
+		for child := range v {
+			if child != n && within(child, n) {
+				if _, gone := removed[child]; !gone {
+					delete(removed, n)
+					break
+				}
+			}
 		}
 	}
 	actions := []action{configAction}
 	for _, n := range sorted(removed, true) {
-		actions = append(actions, action{path: filepath.Join(m.c.Vault, n)})
-		fmt.Fprintln(m.out, "delete "+n)
+		actions = append(actions, action{path: m.c.vaultPath(n)})
+		fmt.Fprintln(m.out, "delete "+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 	}
-	mb := encoded(Record{Version: 2, Entries: meta})
-	md := bytesEntry(mb)
-	actions = append(actions, action{filepath.Join(m.c.Vault, ".sfm.json"), &md, mb})
 	baseEntries := clone(m.base.Entries)
-	baseMeta := clone(m.base.Metadata)
-	for n := range baseEntries {
-		if within(n, name) {
-			delete(baseEntries, n)
-		}
+	for n := range removed {
+		delete(baseEntries, n)
 	}
-	for n := range baseMeta {
-		if within(n, name) {
-			delete(baseMeta, n)
-		}
-	}
-	bb := encoded(Record{Version: 2, Entries: baseEntries, Metadata: baseMeta})
+	bb := encoded(Record{Version: 3, Entries: baseEntries})
 	bd := bytesEntry(bb)
 	actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &bd, bb})
 	return apply(actions)
@@ -262,6 +272,9 @@ func (c *Config) targetPath(value string) (string, error) {
 	}
 	if strings.ContainsAny(p, "\r\n") {
 		return "", fmt.Errorf("target contains newline")
+	}
+	if _, e = c.destination(c.name(p)); e != nil {
+		return "", e
 	}
 	if e = safe(p); e != nil {
 		return "", e
