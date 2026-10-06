@@ -1,7 +1,7 @@
 package sfm
 
 import (
-	"encoding/json"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -45,30 +45,8 @@ func newManager(c *Config, out io.Writer) (*manager, error) {
 	}
 	return m, nil
 }
-func (m *manager) vaultEntries() (map[string]Entry, error) { return m.vaultEntriesScope("") }
-func (m *manager) vaultEntriesScope(scope string) (map[string]Entry, error) {
+func (m *manager) vaultEntries() (map[string]Entry, error) {
 	v := map[string]Entry{}
-	if scope != "" {
-		if _, e := m.c.destination(scope); e != nil {
-			return nil, e
-		}
-		root := filepath.Join(m.c.Vault, scope)
-		if e := safe(root); e != nil {
-			return nil, e
-		}
-		if !exists(root) {
-			return v, nil
-		}
-		e := scanTree(root, func(path string, d Entry) error {
-			n, e := filepath.Rel(m.c.Vault, path)
-			if e != nil {
-				return e
-			}
-			v[n] = d
-			return nil
-		})
-		return v, e
-	}
 	for _, ns := range []string{"home", "root"} {
 		p := filepath.Join(m.c.Vault, ns)
 		if !exists(p) {
@@ -252,7 +230,7 @@ func (m *manager) sourceEntriesScope(scope string) (map[string]Entry, []string, 
 }
 func (m *manager) reconcile(v map[string]Entry, scope string) error {
 	if !m.hasBase && len(m.selected(v)) > 0 {
-		return fmt.Errorf("vault requires reconciliation: review diff, then install")
+		return fmt.Errorf("vault requires reconciliation: review install --dry --diff, then install")
 	}
 	for n, d := range m.selected(v) {
 		if scope != "" && !within(n, scope) {
@@ -263,7 +241,7 @@ func (m *manager) reconcile(v map[string]Entry, scope string) error {
 			p, _ := m.c.destination(n)
 			current, e := entry(p)
 			if e != nil || current != d {
-				return fmt.Errorf("vault changed since reconciliation: %s; review diff and install --force", n)
+				return fmt.Errorf("vault changed since reconciliation: %s; review install --dry --diff, then install or install --force", n)
 			}
 		}
 	}
@@ -307,7 +285,11 @@ func clone(v map[string]Entry) map[string]Entry {
 	}
 	return r
 }
-func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) error {
+func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) error {
+	observations, e := m.observeControls()
+	if e != nil {
+		return e
+	}
 	old, e := m.vaultEntries()
 	if e != nil {
 		return e
@@ -360,15 +342,34 @@ func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) e
 			}
 		}
 	}
+	for n := range old {
+		if e = observations.add(filepath.Join(m.c.Vault, n)); e != nil {
+			return e
+		}
+	}
+	for n := range desired {
+		p, _ := m.c.destination(n)
+		for _, path := range []string{p, filepath.Join(m.c.Vault, n)} {
+			if e = observations.add(path); e != nil {
+				return e
+			}
+		}
+	}
+	for n := range remove {
+		p, _ := m.c.destination(n)
+		if e = observations.add(p); e != nil {
+			return e
+		}
+	}
 	actions := append([]action{}, extra...)
-	plan := map[string]*Entry{}
 	for _, n := range sorted(remove, true) {
 		actions = append(actions, action{path: filepath.Join(m.c.Vault, n)})
-		plan[n] = nil
 		delete(updated, n)
 		delete(future, n)
-		if !jsonOutput {
-			fmt.Fprintln(m.out, "delete "+n)
+		fmt.Fprintln(m.out, "delete "+n)
+		d := remove[n]
+		if e = m.describeChange(filepath.Join(m.c.Vault, n), "", &d, nil, nil, showDiff); e != nil {
+			return e
 		}
 	}
 	for _, n := range sorted(desired, false) {
@@ -385,16 +386,17 @@ func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) e
 			}
 			copyD := d
 			actions = append(actions, action{filepath.Join(m.c.Vault, n), &copyD, b})
-			plan[n] = &copyD
-			if !jsonOutput {
-				verb := "create "
-				if ok {
-					verb = "replace "
-				}
-				fmt.Fprintln(m.out, verb+n)
-				if before.Mode != d.Mode {
-					fmt.Fprintf(m.out, "permissions %s -> %#o\n", n, d.Mode)
-				}
+			verb := "create "
+			if ok {
+				verb = "replace "
+			}
+			fmt.Fprintln(m.out, verb+n)
+			var previous *Entry
+			if ok {
+				previous = &before
+			}
+			if e = m.describeChange(filepath.Join(m.c.Vault, n), p, previous, &d, b, showDiff); e != nil {
+				return e
 			}
 		}
 		updated[n] = d
@@ -407,7 +409,6 @@ func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) e
 	if string(oldMeta) != string(mb) {
 		d := bytesEntry(mb)
 		actions = append(actions, action{mp, &d, mb})
-		plan[".sfm.json"] = &d
 	}
 	base := Record{Version: 2, Entries: future, Metadata: updated}
 	if scope != "" && m.hasBase {
@@ -437,16 +438,8 @@ func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) e
 	bb := encoded(base)
 	bd := bytesEntry(bb)
 	actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &bd, bb})
-	if jsonOutput {
-		if e = json.NewEncoder(m.out).Encode(struct {
-			Entries map[string]*Entry `json:"entries"`
-		}{plan}); e != nil {
-			return e
-		}
-	} else {
-		for _, w := range warnings {
-			fmt.Fprintln(m.out, "WARNING "+w)
-		}
+	for _, w := range warnings {
+		fmt.Fprintln(m.out, "WARNING "+w)
 	}
 	if dry {
 		return nil
@@ -457,87 +450,116 @@ func (m *manager) snapshot(dry, jsonOutput bool, scope string, extra []action) e
 			return e
 		}
 	}
+	if e = observations.check(); e != nil {
+		return e
+	}
 	if e = apply(actions); e != nil {
 		return e
 	}
 	m.meta = meta
 	return nil
 }
-func (m *manager) install(force, dry bool) error {
+func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
+	observations, e := m.observeControls()
+	if e != nil {
+		return e
+	}
 	v, e := m.vaultEntries()
 	if e != nil {
 		return e
 	}
 	selected := m.selected(v)
-	var actions []action
-	matched := true
+	type change struct {
+		name   string
+		action action
+		before *Entry
+	}
+	var changes []change
+	// Freeze every source and destination before displaying or asking anything.
+	for _, n := range sorted(v, false) {
+		if e = observations.add(filepath.Join(m.c.Vault, n)); e != nil {
+			return e
+		}
+	}
 	for _, n := range sorted(selected, false) {
 		d := selected[n]
 		p, _ := m.c.destination(n)
-		if e = safe(p); e != nil {
+		if e = observations.add(p); e != nil {
 			return e
 		}
-		if exists(p) {
-			current, e := entry(p)
-			if e != nil {
-				return e
-			}
-			if current.Type != d.Type {
+		before := observations[p]
+		if before != nil {
+			if before.Type != d.Type {
 				return fmt.Errorf("file-type conflict: %s", p)
 			}
-			if current == d {
-				continue
-			}
-			if !force {
-				matched = false
+			if *before == d {
 				continue
 			}
 		}
-		physical := v[n]
-		b, e := payload(filepath.Join(m.c.Vault, n), physical)
+		b, e := payload(filepath.Join(m.c.Vault, n), v[n])
 		if e != nil {
 			return e
 		}
 		copyD := d
-		actions = append(actions, action{p, &copyD, b})
-		fmt.Fprintln(m.out, "install "+p)
+		changes = append(changes, change{n, action{p, &copyD, b}, before})
 	}
-	for n, d := range m.base.Entries {
+	matched := true
+	for _, n := range sorted(m.base.Entries, false) {
+		d := m.base.Entries[n]
 		if _, ok := v[n]; !ok && m.c.selected(n, d.Type == "dir") {
 			p, _ := m.c.destination(n)
-			if exists(p) {
+			if e = observations.add(p); e != nil {
+				return e
+			}
+			if observations[p] != nil {
 				matched = false
+				fmt.Fprintln(m.out, "vault deletion requires manual installed-copy removal: "+p)
 			}
 		}
+	}
+	var actions []action
+	reader := bufio.NewReader(in)
+	for _, ch := range changes {
+		verb := "create "
+		if ch.before != nil {
+			verb = "replace "
+		}
+		fmt.Fprintln(m.out, verb+ch.action.path)
+		if e = m.describeChange(ch.action.path, filepath.Join(m.c.Vault, ch.name), ch.before, ch.action.want, ch.action.data, showDiff); e != nil {
+			return e
+		}
+		if !dry && !force && ch.before != nil {
+			yes, e := approve(reader, m.out, ch.action.path)
+			if e != nil {
+				return e
+			}
+			if !yes {
+				matched = false
+				fmt.Fprintln(m.out, "skip "+ch.action.path)
+				continue
+			}
+		}
+		actions = append(actions, ch.action)
+	}
+	if dry {
+		return nil
 	}
 	if matched {
 		b := encoded(Record{Version: 2, Entries: v, Metadata: m.meta.Entries})
 		d := bytesEntry(b)
 		actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &d, b})
 	}
-	if dry {
-		return nil
+	if e = observations.check(); e != nil {
+		return e
 	}
 	return apply(actions)
 }
-func (m *manager) inspect(diff bool, scope string) (int, error) {
-	v, e := m.vaultEntriesScope(scope)
+func (m *manager) inspect() (int, error) {
+	v, e := m.vaultEntries()
 	if e != nil {
 		return 2, e
 	}
-	source := map[string]Entry{}
-	var warnings []string
-	discover := true
-	if scope != "" {
-		p, err := m.c.destination(scope)
-		if err != nil {
-			return 2, err
-		}
-		discover = exists(p)
-	}
-	if discover {
-		source, _, warnings, e = m.sourceEntriesScope(scope)
-	}
+	_, _, warnings, e := m.sourceEntries()
 	if e != nil {
 		return 2, e
 	}
@@ -558,47 +580,14 @@ func (m *manager) inspect(diff bool, scope string) (int, error) {
 		}
 	}
 	for _, n := range sorted(m.meta.Entries, false) {
-		if scope != "" && !within(n, scope) {
-			continue
-		}
 		if _, ok := v[n]; !ok {
 			fmt.Fprintln(m.out, "missing metadata payload: "+n)
 			findings = true
 		}
 	}
-	if diff {
-		for _, n := range sorted(source, false) {
-			if _, ok := v[n]; !ok {
-				fmt.Fprintln(m.out, "missing in vault: "+n)
-				findings = true
-			}
-		}
-		for _, n := range sorted(m.selected(v), false) {
-			d := m.selected(v)[n]
-			p, _ := m.c.destination(n)
-			cur, e := entry(p)
-			if os.IsNotExist(e) {
-				fmt.Fprintln(m.out, "missing installed: "+p)
-				findings = true
-				continue
-			}
-			if e != nil {
-				return 2, e
-			}
-			if cur != d {
-				fmt.Fprintln(m.out, "different: "+p)
-				if e := m.describeDifference(n, p, d, cur); e != nil {
-					return 2, e
-				}
-				findings = true
-			}
-		}
-	}
 	if findings {
 		return 1, nil
 	}
-	if !diff {
-		fmt.Fprintln(m.out, "Verification passed")
-	}
+	fmt.Fprintln(m.out, "Verification passed")
 	return 0, nil
 }

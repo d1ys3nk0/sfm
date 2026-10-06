@@ -4,40 +4,61 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"golang.org/x/term"
 )
 
-func (m *manager) describeDifference(name, path string, want, current Entry) error {
-	if want.Type != current.Type {
-		fmt.Fprintf(m.out, "type %s -> %s\n", want.Type, current.Type)
+// describeChange renders current destination -> desired contents.
+func (m *manager) describeChange(path, source string, before, after *Entry, data []byte, showDiff bool) error {
+	if before == nil && after != nil {
+		fmt.Fprintf(m.out, "permissions /dev/null -> %#o\n", after.Mode)
+	}
+	if before != nil && after != nil && before.Mode != after.Mode {
+		fmt.Fprintf(m.out, "permissions %#o -> %#o\n", before.Mode, after.Mode)
+	}
+	if after != nil && after.Type == "link" {
+		old := "/dev/null"
+		if before != nil {
+			old = before.Link
+		}
+		if before == nil || old != after.Link {
+			fmt.Fprintf(m.out, "link %s -> %s\n", old, after.Link)
+		}
+	}
+	if before != nil && before.Type == "link" && after == nil {
+		fmt.Fprintf(m.out, "link %s -> /dev/null\n", before.Link)
+	}
+	if !showDiff || (after != nil && after.Type != "file") || (before != nil && before.Type != "file") {
 		return nil
 	}
-	if want.Mode != current.Mode {
-		fmt.Fprintf(m.out, "permissions %#o -> %#o\n", want.Mode, current.Mode)
-	}
-	if want.Type == "link" && want.Link != current.Link {
-		fmt.Fprintf(m.out, "link %s -> %s\n", want.Link, current.Link)
-	}
-	if want.Type != "file" || want.Hash == current.Hash {
+	if before != nil && after != nil && before.Hash == after.Hash {
 		return nil
 	}
-	before, e := os.ReadFile(filepath.Join(m.c.Vault, name))
-	if e != nil {
-		return e
+	var old []byte
+	if before != nil {
+		var e error
+		old, e = payload(path, *before)
+		if e != nil {
+			return e
+		}
 	}
-	after, e := os.ReadFile(path)
-	if e != nil {
-		return e
-	}
-	if !utf8.Valid(before) || !utf8.Valid(after) || strings.ContainsRune(string(before)+string(after), 0) {
+	if !utf8.Valid(old) || !utf8.Valid(data) || strings.ContainsRune(string(old)+string(data), 0) {
 		fmt.Fprintln(m.out, "binary contents differ")
 		return nil
 	}
-	writeUnified(m.out, name, path, lines(string(before)), lines(string(after)), m.color)
+	oldLabel, newLabel := path, source
+	if before == nil {
+		oldLabel = "/dev/null"
+	}
+	if after == nil {
+		newLabel = "/dev/null"
+	}
+	writeUnified(m.out, oldLabel, newLabel, lines(string(old)), lines(string(data)), m.color)
+	if len(old) == 0 && len(data) == 0 {
+		fmt.Fprintln(m.out, "empty file")
+	}
 	return nil
 }
 
@@ -149,7 +170,7 @@ func writeUnified(out io.Writer, name, path string, before, after []string, colo
 		}
 		return text
 	}
-	fmt.Fprintln(out, paint("1", "--- vault/"+name))
+	fmt.Fprintln(out, paint("1", "--- "+name))
 	fmt.Fprintln(out, paint("1", "+++ "+path))
 	oldPos, newPos := 1, 1
 	for cursor := 0; cursor < len(edits); {

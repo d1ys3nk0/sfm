@@ -6,7 +6,7 @@ SFM captures selected files in a filesystem vault and installs them on another m
 
 Install Go 1.27.1, then run `make build`. The executable is `bin/sfm`.
 
-Create `~/.config/sfm/config.toml` using [the example](examples/config.toml). Use `sfm snapshot --dry` to preview a capture, `sfm snapshot` to apply it, and `sfm diff` to compare installed files. On another machine, `sfm install` creates missing files; `sfm install --force` replaces existing files of the same type after review.
+Create `~/.config/sfm/config.toml` using [the example](examples/config.toml). Use `sfm snapshot --dry --diff` to preview a capture with content differences, then `sfm snapshot` to apply it. On another machine, `sfm install --dry --diff` previews installation; `sfm install` creates missing files and asks before replacing existing differences. Use `sfm install --force` to apply without asking.
 
 ```toml
 vault = "~/file-vault"
@@ -23,17 +23,19 @@ patterns = [
 
 | Command | Behavior |
 | --- | --- |
-| `snapshot [--dry]` | Capture selected files; remove captured children deliberately deleted under an existing source directory. |
-| `snapshot --dry --json` | Print an immutable preview as `{"entries": {"home/path": {"type": "file", "mode": 384, "hash": "…"}, "home/deleted": null}}`, including the `.sfm.json` fingerprint when it changes. |
-| `install [--dry] [--force]` | Create missing files; force replaces differing content, permissions, and link targets. Type conflicts fail. |
-| `diff [PATH] [--color=WHEN]` | Compare all selected payloads and permissions, or only the given file/directory subtree, including unified text differences with three context lines and binary summaries. |
+| `snapshot [--dry] [--diff]` | Capture selected files automatically; remove captured children deliberately deleted under an existing source directory. Dry runs preview without writing; `--diff` adds content differences. |
+| `install [--dry] [--diff] [--force]` | Create missing files and ask `y` or `n` for each existing differing path. `--force` skips questions. Dry runs show all changes without asking or writing. `--dry` and `--force` cannot be combined. Type conflicts fail. |
 | `verify` | Check missing selection roots, unexpected payloads, and metadata integrity. |
 | `track PATH` | Add a literal selection and capture that subtree transactionally. Directory exclusions remain effective. |
 | `forget PATH` | Remove scoped literal selections, add an exclusion when needed, and remove that captured subtree. Installed source files remain in place. |
 
-`diff` colors terminal output automatically and keeps redirected output plain. Use `--color=always` (or `--color`) to force Git-style colors, `--color=never` to disable them, or `--color=auto` for the default.
+`--diff` shows changes from current destination content to desired content, with three context lines and binary summaries. New files show their entire text as added lines; deleted vault files show removed lines. Operations, permission changes, and link changes are printed without `--diff`. Colors are automatic on terminals and redirected output stays plain. Use `--color=always` (or `--color`) to force Git-style colors, `--color=never` to disable them, or `--color=auto` for the default. Color options require `--diff`.
 
-An optional `diff` target accepts an absolute path, a path relative to the current directory, or a home-relative path beginning with `~/`. Directory targets include descendants, and the exit status reflects only that scope. The filesystem root, home directory itself, and vault are rejected as targets; omit `PATH` for a full comparison. Use `--config FILE` anywhere to select configuration. `--help` and `--version` work without configuration. Exit codes are 0 for success, 1 for differences or verification findings, and 2 for errors.
+Installation collects every answer before applying one transaction. Answers are case-insensitive; invalid input repeats the question, and EOF or input errors abort all planned writes. Declined replacements remain unchanged and reconciliation stays pending. SFM rechecks sources, destinations, configuration, metadata, and baseline before applying, so edits made during questions abort the operation.
+
+Use `--config FILE` anywhere to select configuration. `--help` and `--version` work without configuration. Exit codes are 0 for successful operations and previews, 1 for verification findings, and 2 for errors.
+
+The standalone `diff` command and `--json` preview are removed. Replace comparison commands with `install --dry --diff` or `snapshot --dry --diff`; previews remain human-readable. There are no `--ask`, `--review`, or `-v` modes; ordinary installation asks automatically.
 
 ## Selection and safety
 
@@ -41,9 +43,9 @@ Patterns are ordered: a matching rule includes a path; `!` excludes it; a later 
 
 The vault stores files beneath `home/` and `root/`, with version-2 `.sfm.json` describing type, decimal POSIX mode, SHA-256 content hash, and symlink target. Other files at the vault root are outside SFM's responsibility. Unselected payloads are retained and reported by verification. Missing source roots never cause captured files to be removed. Directory deletion preserves retained children.
 
-SFM rejects unsafe ancestors, traversal, vault self-selection, special file types, and file-type conflicts. It copies links without following them. Mutations prevalidate and freeze payloads, use atomic file replacement, and roll back filesystem changes on errors. Dry runs, diff, and verify write nothing. Selected content is shown only by explicit `diff`.
+SFM rejects unsafe ancestors, traversal, vault self-selection, special file types, and file-type conflicts. It copies links without following them. Mutations prevalidate and freeze payloads, use atomic file replacement, and roll back filesystem changes on errors. Dry runs and verify write nothing. Selected content is shown only with explicit `--diff`, which adds output and does not prevent writes; combine it with `--dry` to preview.
 
-When a vault changes externally, review `diff` and reconcile with `install`. Ordinary installation preserves existing differences and does not acknowledge them. Incoming vault deletions require deliberate removal of the installed copy; SFM never deletes installed files for you. A vault with existing selected payloads needs an initial installation before capture.
+When a vault changes externally, review `install --dry --diff` and reconcile with `install` or `install --force`. Refusing a replacement leaves it pending and does not acknowledge the new vault state. Incoming vault deletions require deliberate removal of the installed copy; SFM never deletes installed files for you. A vault with existing selected payloads needs an initial installation before capture.
 
 ## Configuration and state
 

@@ -14,30 +14,32 @@ var Commit = "unknown"
 const usage = `SFM — Synced File Manager
 Usage: sfm [--config FILE] COMMAND [OPTIONS]
 Commands:
-  snapshot [--dry] [--json]   Copy selected files into the vault
-  install [--dry] [--force]   Install missing files; force replaces differences
-  diff [PATH] [--color=WHEN] Compare all files or one file/directory subtree
+  snapshot [--dry] [--diff]   Copy selected files into the vault
+  install [--dry] [--diff] [--force]
+                            Create missing files; ask before replacing differences
   verify                    Check selection and metadata integrity
   track PATH                Track and capture a file or directory
   forget PATH               Stop tracking a file or directory
-Diff colors: auto (default), always, never; --color means always
+Options: --dry previews without writing; --diff adds content differences
+         --force installs without asking; cannot combine --dry and --force
+Diff colors (with --diff): auto (default), always, never; --color means always
 Global options: --config FILE, --help, --version
 `
 
 func Run(args []string, out, errOut io.Writer) int {
-	code, e := run(args, out)
+	code, e := runWithInput(args, os.Stdin, out)
 	if e != nil {
 		fmt.Fprintln(errOut, "sfm: "+e.Error())
 		return 2
 	}
 	return code
 }
-func run(args []string, out io.Writer) (int, error) {
+func runWithInput(args []string, in io.Reader, out io.Writer) (int, error) {
 	config := ""
 	color := "auto"
 	colorSet := false
 	var positional []string
-	dry, force, jsonOutput := false, false, false
+	dry, force, showDiff := false, false, false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
@@ -59,8 +61,8 @@ func run(args []string, out io.Writer) (int, error) {
 			force = true
 		case "--color":
 			color, colorSet = "always", true
-		case "--json":
-			jsonOutput = true
+		case "--diff":
+			showDiff = true
 		default:
 			if strings.HasPrefix(a, "--config=") {
 				config = strings.TrimPrefix(a, "--config=")
@@ -78,23 +80,23 @@ func run(args []string, out io.Writer) (int, error) {
 		return 0, nil
 	}
 	cmd := positional[0]
-	if cmd != "snapshot" && cmd != "install" && cmd != "diff" && cmd != "verify" && cmd != "track" && cmd != "forget" {
+	if cmd != "snapshot" && cmd != "install" && cmd != "verify" && cmd != "track" && cmd != "forget" {
 		return 2, fmt.Errorf("unknown command: %s", cmd)
 	}
 	want := 1
 	if cmd == "track" || cmd == "forget" {
 		want = 2
 	}
-	if len(positional) != want && !(cmd == "diff" && len(positional) == 2) {
+	if len(positional) != want {
 		return 2, fmt.Errorf("invalid arguments for %s", cmd)
 	}
-	if colorSet && cmd != "diff" {
-		return 2, fmt.Errorf("--color is only valid for diff")
+	if colorSet && !showDiff {
+		return 2, fmt.Errorf("--color requires --diff")
 	}
 	if color != "auto" && color != "always" && color != "never" {
 		return 2, fmt.Errorf("invalid color mode: %s", color)
 	}
-	if force && cmd != "install" || dry && cmd != "snapshot" && cmd != "install" || jsonOutput && (cmd != "snapshot" || !dry) {
+	if force && cmd != "install" || dry && cmd != "snapshot" && cmd != "install" || showDiff && cmd != "snapshot" && cmd != "install" || dry && force {
 		return 2, fmt.Errorf("options are not valid for %s", cmd)
 	}
 	if config == "" {
@@ -130,21 +132,11 @@ func run(args []string, out io.Writer) (int, error) {
 	m.color = color == "always" || color == "auto" && terminalOutput(out)
 	switch cmd {
 	case "snapshot":
-		e = m.snapshot(dry, jsonOutput, "", nil)
+		e = m.snapshot(dry, showDiff, "", nil)
 	case "install":
-		e = m.install(force, dry)
-	case "diff":
-		scope := ""
-		if len(positional) == 2 {
-			path, e := c.targetPath(positional[1])
-			if e != nil {
-				return 2, e
-			}
-			scope = c.name(path)
-		}
-		return m.inspect(true, scope)
+		e = m.install(force, dry, showDiff, in)
 	case "verify":
-		return m.inspect(false, "")
+		return m.inspect()
 	case "track", "forget":
 		e = m.track(positional[1], cmd == "track")
 	}

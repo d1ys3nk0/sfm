@@ -44,6 +44,15 @@ func (f fixture) run(args ...string) (int, string, string) {
 	code := Run(append([]string{"--config", f.config}, args...), &out, &err)
 	return code, out.String(), err.String()
 }
+func (f fixture) runInput(input string, args ...string) (int, string, string) {
+	f.t.Helper()
+	var out bytes.Buffer
+	code, e := runWithInput(append([]string{"--config", f.config}, args...), strings.NewReader(input), &out)
+	if e != nil {
+		return 2, out.String(), e.Error()
+	}
+	return code, out.String(), ""
+}
 func must(t *testing.T, e error) {
 	t.Helper()
 	if e != nil {
@@ -73,7 +82,7 @@ func TestSnapshotInstallReconcile(t *testing.T) {
 	f.write(saved, "incoming\n")
 	c, o, e = f.run("snapshot")
 	requireCode(t, 2, c, o, e)
-	c, o, e = f.run("install")
+	c, o, e = f.runInput("n\n", "install")
 	requireCode(t, 0, c, o, e)
 	b, err = os.ReadFile(file)
 	must(t, err)
@@ -96,14 +105,12 @@ func TestSnapshotInstallReconcile(t *testing.T) {
 		t.Fatal("selected deletion not captured")
 	}
 }
-func TestDryRunJSONNoMutation(t *testing.T) {
+func TestDryRunNoMutation(t *testing.T) {
 	f := setup(t, "~/file")
 	f.write(filepath.Join(f.home, "file"), "payload")
-	c, o, e := f.run("snapshot", "--dry", "--json")
+	c, o, e := f.run("snapshot", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
-	var p struct{ Entries map[string]*Entry }
-	must(t, json.Unmarshal([]byte(o), &p))
-	if p.Entries["home/file"] == nil || p.Entries[".sfm.json"] == nil {
+	if !strings.Contains(o, "--- /dev/null") || !strings.Contains(o, "+payload") || strings.Contains(o, ".sfm.json") {
 		t.Fatal(o)
 	}
 	if exists(f.state) || exists(filepath.Join(f.vault, "home")) || exists(filepath.Join(f.vault, ".sfm.json")) {
@@ -111,13 +118,6 @@ func TestDryRunJSONNoMutation(t *testing.T) {
 	}
 	c, o, e = f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	for n, want := range p.Entries {
-		got, err := entry(filepath.Join(f.vault, n))
-		must(t, err)
-		if got != *want {
-			t.Fatalf("plan mismatch %s: %#v %#v", n, got, want)
-		}
-	}
 }
 func TestPatternSemantics(t *testing.T) {
 	cases := []struct {
@@ -261,14 +261,14 @@ func TestDiffTextAndBinary(t *testing.T) {
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
 	f.write(file, "after\n")
-	c, o, e = f.run("diff")
-	requireCode(t, 1, c, o, e)
+	c, o, e = f.run("snapshot", "--dry", "--diff")
+	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "-before") || !strings.Contains(o, "+after") {
 		t.Fatal(o)
 	}
 	f.write(file, "\x00after")
-	c, o, e = f.run("diff")
-	requireCode(t, 1, c, o, e)
+	c, o, e = f.run("snapshot", "--dry", "--diff")
+	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "binary contents differ") {
 		t.Fatal(o)
 	}
@@ -370,6 +370,9 @@ func TestIncomingDeletionRequiresDeliberateRemoval(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 	if !exists(file) {
 		t.Fatal("incoming deletion removed installed copy")
+	}
+	if !strings.Contains(o, "manual installed-copy removal: "+file) {
+		t.Fatal("incoming deletion was not reported: " + o)
 	}
 	c, o, e = f.run("snapshot")
 	requireCode(t, 2, c, o, e)
@@ -485,69 +488,14 @@ func TestTrackingCommandNames(t *testing.T) {
 	}
 }
 
-func TestDiffTargetScope(t *testing.T) {
-	f := setup(t, "~/settings/", "~/settings-extra/", "~/unchanged")
-	first := filepath.Join(f.home, "settings/first")
-	nested := filepath.Join(f.home, "settings/nested/second")
-	sibling := filepath.Join(f.home, "settings-extra/file")
-	unchanged := filepath.Join(f.home, "unchanged")
-	for _, p := range []string{first, nested, sibling, unchanged} {
-		f.write(p, "before\n")
-	}
-	c, o, e := f.run("snapshot")
-	requireCode(t, 0, c, o, e)
-	for _, p := range []string{first, nested, sibling} {
-		f.write(p, "after\n")
-	}
-	t.Chdir(f.home)
-	c, o, e = f.run("diff", "settings/first")
-	requireCode(t, 1, c, o, e)
-	if !strings.Contains(o, "different: "+first) || strings.Contains(o, nested) || strings.Contains(o, sibling) {
-		t.Fatal("file scope: " + o)
-	}
-	c, o, e = f.run("diff", "~/settings")
-	requireCode(t, 1, c, o, e)
-	if !strings.Contains(o, "different: "+first) || !strings.Contains(o, "different: "+nested) || strings.Contains(o, sibling) {
-		t.Fatal("directory scope: " + o)
-	}
-	c, o, e = f.run("diff", unchanged)
-	requireCode(t, 0, c, o, e)
-	if o != "" {
-		t.Fatal("unchanged scope: " + o)
-	}
-	c, o, e = f.run("diff")
-	requireCode(t, 1, c, o, e)
-	for _, p := range []string{first, nested, sibling} {
-		if !strings.Contains(o, "different: "+p) {
-			t.Fatal("full diff omitted " + p)
-		}
-	}
-	must(t, os.Remove(first))
-	c, o, e = f.run("diff", first)
-	requireCode(t, 1, c, o, e)
-	if !strings.Contains(o, "missing installed: "+first) || strings.Contains(o, sibling) {
-		t.Fatal("missing scoped copy: " + o)
-	}
-}
-func TestDiffTargetValidation(t *testing.T) {
+func TestRemovedCommandsAndInvalidOptions(t *testing.T) {
 	f := setup(t)
-	for _, args := range [][]string{{"diff", "one", "two"}, {"diff", ""}, {"diff", f.home}, {"diff", f.vault}, {"diff", "/"}} {
+	for _, args := range [][]string{
+		{"diff"}, {"diff", "~/file"}, {"snapshot", "--json"}, {"install", "--ask"}, {"install", "--review"}, {"snapshot", "-v"},
+		{"snapshot", "--force"}, {"install", "--dry", "--force"}, {"verify", "--diff"}, {"track", "~/file", "--diff"},
+		{"install", "--color=never"}, {"snapshot", "--diff", "--color=wrong"}, {"install", "~/file", "--diff"},
+	} {
 		c, o, e := f.run(args...)
 		requireCode(t, 2, c, o, e)
-	}
-}
-func TestScopedDiffIgnoresUnrelatedUnsafePayload(t *testing.T) {
-	f := setup(t, "~/file", "~/outside/")
-	file := filepath.Join(f.home, "file")
-	f.write(file, "same")
-	f.write(filepath.Join(f.home, "outside/copy"), "same")
-	c, o, e := f.run("snapshot")
-	requireCode(t, 0, c, o, e)
-	must(t, os.RemoveAll(filepath.Join(f.vault, "home/outside")))
-	must(t, os.Symlink(f.home, filepath.Join(f.vault, "home/outside")))
-	c, o, e = f.run("diff", file)
-	requireCode(t, 0, c, o, e)
-	if o != "" {
-		t.Fatal(o)
 	}
 }

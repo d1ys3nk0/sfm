@@ -22,8 +22,8 @@ func TestDiffCompactHunks(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 	values[5], values[24] = "first change\n", "second change\n"
 	f.write(file, strings.Join(values, ""))
-	c, o, e = f.run("diff")
-	requireCode(t, 1, c, o, e)
+	c, o, e = f.run("snapshot", "--dry", "--diff")
+	requireCode(t, 0, c, o, e)
 	for _, want := range []string{"@@ -3,7 +3,7 @@", "@@ -22,7 +22,7 @@", "-line 6\n+first change\n", "-line 25\n+second change\n"} {
 		if !strings.Contains(o, want) {
 			t.Fatalf("missing %q:\n%s", want, o)
@@ -59,8 +59,8 @@ func TestDiffColorModes(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 	f.write(file, "new\n")
 	for _, mode := range []string{"auto", "never", "always"} {
-		c, o, e = f.run("diff", "--color="+mode)
-		requireCode(t, 1, c, o, e)
+		c, o, e = f.run("snapshot", "--dry", "--diff", "--color="+mode)
+		requireCode(t, 0, c, o, e)
 		if strings.Contains(o, "\x1b[") != (mode == "always") {
 			t.Fatalf("mode %s: %q", mode, o)
 		}
@@ -72,8 +72,8 @@ func TestDiffColorModes(t *testing.T) {
 			}
 		}
 	}
-	c, o, e = f.run("diff", "--color")
-	requireCode(t, 1, c, o, e)
+	c, o, e = f.run("snapshot", "--dry", "--diff", "--color")
+	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "\x1b[") {
 		t.Fatal(o)
 	}
@@ -95,8 +95,8 @@ func TestDiffColorModes(t *testing.T) {
 		t.Fatal("null device classified as terminal")
 	}
 	f.write(file, "\x00binary")
-	c, o, e = f.run("diff", "--color=always")
-	requireCode(t, 1, c, o, e)
+	c, o, e = f.run("snapshot", "--dry", "--diff", "--color=always")
+	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "binary contents differ") || strings.Contains(o, "@@") {
 		t.Fatal(o)
 	}
