@@ -11,34 +11,11 @@ import (
 )
 
 type manager struct {
-	c       *Config
-	base    Record
-	state   string
-	hasBase bool
-	out     io.Writer
-	color   bool
+	c     *Config
+	out   io.Writer
+	color bool
 }
 
-func newManager(c *Config, out io.Writer) (*manager, error) {
-	s, e := StateDir(c.Vault)
-	if e != nil {
-		return nil, e
-	}
-	m := &manager{c: c, state: s, out: out, hasBase: exists(filepath.Join(s, "baseline.json"))}
-	m.base, e = readRecord(filepath.Join(s, "baseline.json"))
-	if e != nil {
-		return nil, e
-	}
-	for n, d := range m.base.Entries {
-		if _, e = c.destination(n); e != nil {
-			return nil, e
-		}
-		if d.Type != "file" && d.Type != "dir" && d.Type != "link" || d.Mode > 07777 {
-			return nil, fmt.Errorf("invalid baseline entry: %s", n)
-		}
-	}
-	return m, nil
-}
 func (m *manager) vaultEntries() (map[string]Entry, error) {
 	v := map[string]Entry{}
 	if !exists(m.c.Vault) {
@@ -227,36 +204,6 @@ func (m *manager) sourceEntriesScope(scope string) (map[string]Entry, []string, 
 	}
 	return v, roots, warnings, nil
 }
-func (m *manager) reconcile(v map[string]Entry, scope string) error {
-	if !m.hasBase && len(m.selected(v)) > 0 {
-		return fmt.Errorf("vault requires reconciliation: review install --dry --diff, then install")
-	}
-	for n, d := range m.selected(v) {
-		if scope != "" && !within(n, scope) {
-			continue
-		}
-		physical := v[n]
-		if old, ok := m.base.Entries[n]; !ok || old != physical {
-			p, _ := m.c.destination(n)
-			current, e := entry(p)
-			if e != nil || current != d {
-				return fmt.Errorf("vault changed since reconciliation: %s; review install --dry --diff, then install or install --force", n)
-			}
-		}
-	}
-	for n, d := range m.base.Entries {
-		if scope != "" && !within(n, scope) {
-			continue
-		}
-		if _, ok := v[n]; !ok && m.c.selected(n, d.Type == "dir") {
-			p, _ := m.c.destination(n)
-			if exists(p) {
-				return fmt.Errorf("vault deletion requires deliberate installed-copy removal: %s", n)
-			}
-		}
-	}
-	return nil
-}
 func payload(path string, d Entry) ([]byte, error) {
 	now, e := entry(path)
 	if e != nil {
@@ -277,13 +224,6 @@ func payload(path string, d Entry) ([]byte, error) {
 	}
 	return b, nil
 }
-func clone(v map[string]Entry) map[string]Entry {
-	r := map[string]Entry{}
-	for n, d := range v {
-		r[n] = d
-	}
-	return r
-}
 func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) error {
 	observations, e := m.observeControls()
 	if e != nil {
@@ -291,9 +231,6 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	}
 	old, e := m.vaultEntries()
 	if e != nil {
-		return e
-	}
-	if e = m.reconcile(old, scope); e != nil {
 		return e
 	}
 	desired, roots, warnings, e := m.sourceEntriesScope(scope)
@@ -307,7 +244,6 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 			}
 		}
 	}
-	future := clone(old)
 	remove := map[string]Entry{}
 	for n, d := range old {
 		if scope != "" && !within(n, scope) {
@@ -362,7 +298,6 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	actions := append([]action{}, extra...)
 	for _, n := range sorted(remove, true) {
 		actions = append(actions, action{path: m.c.vaultPath(n)})
-		delete(future, n)
 		fmt.Fprintln(m.out, "delete "+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 		d := remove[n]
 		if e = m.describeChange(m.c.vaultPath(n), "", &d, nil, nil, showDiff); e != nil {
@@ -396,40 +331,7 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 				return e
 			}
 		}
-		future[n] = d
 	}
-	// Atomic copies create omitted selection ancestors with private modes.
-	// Record these actual payload directories in the private baseline too.
-	for n := range desired {
-		for p := filepath.Dir(m.c.vaultPath(n)); p != m.c.Vault; p = filepath.Dir(p) {
-			parent, e := m.c.vaultName(p)
-			if e != nil {
-				return e
-			}
-			if parent != "" {
-				if _, ok := future[parent]; !ok {
-					future[parent] = Entry{Type: "dir", Mode: 0700}
-				}
-			}
-		}
-	}
-	base := Record{Version: 3, Entries: clone(m.base.Entries)}
-	for n, d := range base.Entries {
-		if (scope == "" || within(n, scope)) && m.c.selected(n, d.Type == "dir") {
-			if _, ok := future[n]; !ok {
-				delete(base.Entries, n)
-			}
-		}
-	}
-	for n, d := range future {
-		_, existed := old[n]
-		if !existed || (scope == "" || within(n, scope)) && m.c.selected(n, d.Type == "dir") {
-			base.Entries[n] = d
-		}
-	}
-	bb := encoded(base)
-	bd := bytesEntry(bb)
-	actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &bd, bb})
 	for _, w := range warnings {
 		fmt.Fprintln(m.out, "WARNING "+w)
 	}
@@ -451,8 +353,6 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	if e = apply(actions); e != nil {
 		return e
 	}
-	m.base = base
-	m.hasBase = true
 	return nil
 }
 func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
@@ -464,7 +364,6 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	if e != nil {
 		return e
 	}
-	selected := v
 	type change struct {
 		name   string
 		action action
@@ -477,8 +376,8 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 			return e
 		}
 	}
-	for _, n := range sorted(selected, false) {
-		d := selected[n]
+	for _, n := range sorted(v, false) {
+		d := v[n]
 		p, _ := m.c.destination(n)
 		if e = observations.add(p); e != nil {
 			return e
@@ -499,19 +398,6 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 		copyD := d
 		changes = append(changes, change{n, action{p, &copyD, b}, before})
 	}
-	matched := true
-	for _, n := range sorted(m.base.Entries, false) {
-		if _, ok := v[n]; !ok {
-			p, _ := m.c.destination(n)
-			if e = observations.add(p); e != nil {
-				return e
-			}
-			if observations[p] != nil {
-				matched = false
-				fmt.Fprintln(m.out, "vault deletion requires manual installed-copy removal: "+p)
-			}
-		}
-	}
 	var actions []action
 	reader := bufio.NewReader(in)
 	for _, ch := range changes {
@@ -529,7 +415,6 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 				return e
 			}
 			if !yes {
-				matched = false
 				fmt.Fprintln(m.out, "skip "+ch.action.path)
 				continue
 			}
@@ -538,11 +423,6 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	}
 	if dry {
 		return nil
-	}
-	if matched {
-		b := encoded(Record{Version: 3, Entries: v})
-		d := bytesEntry(b)
-		actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &d, b})
 	}
 	if e = observations.check(); e != nil {
 		return e

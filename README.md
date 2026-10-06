@@ -1,6 +1,6 @@
 # SFM — Synced File Manager
 
-SFM captures selected files in a filesystem vault and installs every vault payload on another machine. It preserves permissions, symlinks, and empty directories, with ordered selection rules and conservative reconciliation. It supports macOS and Linux.
+SFM captures selected files in a filesystem vault and installs every vault payload on another machine. It preserves permissions, symlinks, and empty directories, with ordered selection rules and direct source-to-destination comparisons. It supports macOS and Linux.
 
 ## Quick start
 
@@ -31,7 +31,7 @@ patterns = [
 
 `--diff` shows changes from current destination content to desired content, with three context lines and binary summaries. New files show their entire text as added lines; deleted vault files show removed lines. Operations, permission changes, and link changes are printed without `--diff`. Colors are automatic on terminals and redirected output stays plain. Use `--color=always` (or `--color`) to force Git-style colors, `--color=never` to disable them, or `--color=auto` for the default. Color options require `--diff`.
 
-Installation collects every answer before applying one transaction. Answers are case-insensitive; invalid input repeats the question, and EOF or input errors abort all planned writes. Declined replacements remain unchanged and reconciliation stays pending. SFM rechecks sources, destinations, configuration, and baseline before applying, so edits made during questions abort the operation.
+Installation collects every answer before applying one transaction. Answers are case-insensitive; invalid input repeats the question, and EOF or input errors abort all planned writes. Declined replacements remain unchanged. SFM rechecks sources, destinations, configuration, and the vault inventory before applying, so edits made during questions abort the operation.
 
 Use `--config FILE` anywhere to select configuration. `--help` and `--version` work without configuration. Exit codes are 0 for successful operations and previews, 1 for verification findings, and 2 for errors.
 
@@ -49,21 +49,17 @@ Snapshot preserves unselected payloads, missing source roots, and directories co
 
 SFM rejects unsafe ancestors, traversal, vault self-selection, special file types, and file-type conflicts. It copies links without following them. Mutations prevalidate and freeze payloads, use atomic file replacement, and roll back filesystem changes on errors. Dry runs and verify write nothing. Selected content is shown only with explicit `--diff`, which adds output and does not prevent writes; combine it with `--dry` to preview.
 
-When a vault changes externally, review `install --dry --diff` and reconcile with `install` or `install --force`. Refusing a replacement leaves it pending and does not acknowledge the new vault state. Incoming vault deletions require deliberate removal of the installed copy; SFM never deletes installed files for you. A vault with existing selected payloads needs an initial installation before capture. Snapshot preserves acknowledged fingerprints for unselected entries, so their incoming changes remain pending.
+Each operation compares the current source and destination directly. Snapshot and track treat selected local content as authoritative, including when vault payloads were changed externally. Installation considers only current vault payloads and leaves installed paths absent from the vault untouched.
 
-## Configuration and state
+## Configuration and locking
 
 Configuration defaults to `$XDG_CONFIG_HOME/sfm/config.toml`, or `~/.config/sfm/config.toml`. `vault` is required; `[targets].patterns` is an array of strings. Unknown configuration fields fail. Tracking edits preserve TOML comments and surrounding source formatting, and follow a configuration symlink to its real file.
 
-State defaults to `$XDG_STATE_HOME/sfm/<vault-id>/`, or `~/.local/state/sfm/<vault-id>/`. The vault ID is the full lowercase SHA-256 of its canonical absolute path, without a trailing separator. `baseline.json` has version 3 with an `entries` map of type, decimal POSIX mode, SHA-256 content hash, and link target; internal entry names remain `home/...` and `root/...` for stable reconciliation. There is no `metadata` map; `lock` serializes mutations. Keep state owner-private. A moved vault needs reconciliation at its new path.
-
-The state is local to each checkout and machine. It records acknowledged filesystem state, so do not share it between machines or delete it casually.
+The mutation lock is stored at `$XDG_STATE_HOME/sfm/<vault-id>/lock`, or `~/.local/state/sfm/<vault-id>/lock`. The vault ID is the full lowercase SHA-256 of its canonical absolute path, without a trailing separator. Keep the lock directory owner-private. Concurrent mutations for the same vault are rejected; dry runs and verify create no lock files.
 
 ## Migrating a version-2 vault
 
-This layout is incompatible with the former `home/`, `root/`, and `.sfm.json` vault format. Back up the vault and each machine's private baseline before migration. Move the former `home/` contents into the vault root and the former `root/` contents beneath `_`; preserve current filesystem modes, empty directories, and links, and resolve any name collisions before moving files. Move the manifest out of the vault. Administration files left inside the vault become ordinary installable payloads.
-
-Convert each local baseline to version 3 with only `version` and `entries`, keeping its acknowledged `home/...` and `root/...` identifiers and fingerprints rather than replacing the baseline with a scan of current incoming files. Older baselines are rejected with migration guidance. Review `install --dry --diff` after migration before reconciling; do not discard the baseline to bypass incoming-change checks.
+This layout is incompatible with the former `home/`, `root/`, and `.sfm.json` vault format. Back up the vault before migration. Move the former `home/` contents into the vault root and the former `root/` contents beneath `_`; preserve current filesystem modes, empty directories, and links, and resolve any name collisions before moving files. Move the manifest out of the vault. Administration files left inside the vault become ordinary installable payloads. Review `install --dry --diff` after migration before installing.
 
 ## Development
 

@@ -299,7 +299,7 @@ func (c *Config) selected(name string, dir bool) bool {
 	return value
 }
 
-// StateDir returns the private reconciliation directory for a canonical vault path.
+// StateDir returns the private lock directory for a canonical vault path.
 func StateDir(vault string) (string, error) {
 	v, e := filepath.Abs(vault)
 	if e != nil {

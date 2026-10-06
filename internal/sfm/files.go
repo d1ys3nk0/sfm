@@ -2,9 +2,7 @@ package sfm
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,14 +11,10 @@ import (
 )
 
 type Entry struct {
-	Type string `json:"type"`
-	Mode uint32 `json:"mode"`
-	Hash string `json:"hash,omitempty"`
-	Link string `json:"link,omitempty"`
-}
-type Record struct {
-	Version int              `json:"version"`
-	Entries map[string]Entry `json:"entries"`
+	Type string
+	Mode uint32
+	Hash string
+	Link string
 }
 
 func safe(path string) error {
@@ -96,48 +90,6 @@ func atomic(path string, b []byte, mode uint32) error {
 	}
 	return os.Rename(f.Name(), path)
 }
-func encoded(r Record) []byte {
-	b, _ := json.MarshalIndent(r, "", "  ")
-	return append(b, '\n')
-}
-func readRecord(path string) (Record, error) {
-	r := Record{Version: 3, Entries: map[string]Entry{}}
-	if !exists(path) {
-		return r, nil
-	}
-	s, e := os.Lstat(path)
-	if e != nil {
-		return r, e
-	}
-	if !s.Mode().IsRegular() {
-		return r, fmt.Errorf("baseline must be regular: %s", path)
-	}
-	b, e := os.ReadFile(path)
-	if e != nil {
-		return r, e
-	}
-	var header struct {
-		Version int `json:"version"`
-	}
-	if e = json.Unmarshal(b, &header); e != nil {
-		return r, e
-	}
-	if header.Version != 3 {
-		return r, fmt.Errorf("unsupported baseline version %d: %s; migrate the vault layout and local baseline to version 3 before continuing", header.Version, path)
-	}
-	d := json.NewDecoder(strings.NewReader(string(b)))
-	d.DisallowUnknownFields()
-	if e = d.Decode(&r); e != nil {
-		return r, e
-	}
-	if r.Entries == nil {
-		return r, fmt.Errorf("baseline entries missing: %s", path)
-	}
-	if e = d.Decode(new(any)); e != io.EOF {
-		return r, fmt.Errorf("trailing baseline content: %s", path)
-	}
-	return r, nil
-}
 func sorted(m map[string]Entry, reverse bool) []string {
 	names := make([]string, 0, len(m))
 	for n := range m {
@@ -207,7 +159,7 @@ type saved struct {
 }
 
 func apply(actions []action) (err error) {
-	// Skip exact no-op writes, including controls and baseline files.
+	// Skip exact no-op writes, including configuration files.
 	pending := make([]action, 0, len(actions))
 	for _, a := range actions {
 		if !exists(a.path) {

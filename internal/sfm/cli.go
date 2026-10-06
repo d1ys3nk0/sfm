@@ -128,10 +128,7 @@ func runWithInput(args []string, in io.Reader, out io.Writer) (int, error) {
 		}
 		defer unlock()
 	}
-	m, e := newManager(c, out)
-	if e != nil {
-		return 2, e
-	}
+	m := &manager{c: c, out: out}
 	m.color = color == "always" || color == "auto" && terminalOutput(out)
 	switch cmd {
 	case "snapshot":
@@ -144,18 +141,22 @@ func runWithInput(args []string, in io.Reader, out io.Writer) (int, error) {
 	return 0, e
 }
 func (m *manager) track(value string, adding bool) error {
+	observations, e := m.observeControls()
+	if e != nil {
+		return e
+	}
 	p, e := m.c.targetPath(value)
 	if e != nil {
 		return e
 	}
 	name := m.c.name(p)
+	if e = observations.add(p); e != nil {
+		return e
+	}
 	selectedBefore := map[string]Entry{}
 	if !adding {
 		v, e := m.vaultEntries()
 		if e != nil {
-			return e
-		}
-		if e = m.reconcile(v, name); e != nil {
 			return e
 		}
 		selectedBefore = m.selected(v)
@@ -176,8 +177,14 @@ func (m *manager) track(value string, adding bool) error {
 		}
 		if saved, ok := v[name]; ok {
 			dir = saved.Type == "dir"
-		} else if saved, ok := m.base.Entries[name]; ok {
-			dir = saved.Type == "dir"
+		} else {
+			for _, r := range m.c.rules {
+				candidate := r.ns + "/" + unescape(r.literal)
+				if !r.wildcard && (candidate == name && r.dir || candidate != name && within(candidate, name)) {
+					dir = true
+					break
+				}
+			}
 		}
 	}
 
@@ -221,9 +228,6 @@ func (m *manager) track(value string, adding bool) error {
 	if e != nil {
 		return e
 	}
-	if e = m.reconcile(v, name); e != nil {
-		return e
-	}
 	removed := map[string]Entry{}
 	for n, d := range v {
 		if _, selected := selectedBefore[n]; selected && within(n, name) {
@@ -244,18 +248,22 @@ func (m *manager) track(value string, adding bool) error {
 			}
 		}
 	}
+	for n := range v {
+		if e = observations.add(m.c.vaultPath(n)); e != nil {
+			return e
+		}
+	}
 	actions := []action{configAction}
 	for _, n := range sorted(removed, true) {
 		actions = append(actions, action{path: m.c.vaultPath(n)})
 		fmt.Fprintln(m.out, "delete "+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 	}
-	baseEntries := clone(m.base.Entries)
-	for n := range removed {
-		delete(baseEntries, n)
+	if e = observations.check(); e != nil {
+		return e
 	}
-	bb := encoded(Record{Version: 3, Entries: baseEntries})
-	bd := bytesEntry(bb)
-	actions = append(actions, action{filepath.Join(m.state, "baseline.json"), &bd, bb})
+	if e = m.checkVault(v); e != nil {
+		return e
+	}
 	return apply(actions)
 }
 

@@ -49,17 +49,13 @@ func TestInstallPreviewAllChanges(t *testing.T) {
 	}
 }
 
-func TestInstallApprovalAndReconciliation(t *testing.T) {
+func TestInstallApprovalAndDecline(t *testing.T) {
 	f := setup(t, "~/a", "~/b", "~/new", "~/same")
 	for _, n := range []string{"a", "b", "new", "same"} {
 		f.write(filepath.Join(f.home, n), "saved\n")
 	}
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	state, err := StateDir(f.vault)
-	must(t, err)
-	baseline := filepath.Join(state, "baseline.json")
-	before := readText(t, baseline)
 	for _, n := range []string{"a", "b"} {
 		f.write(filepath.Join(f.vault, n), "incoming\n")
 	}
@@ -72,11 +68,6 @@ func TestInstallApprovalAndReconciliation(t *testing.T) {
 	if readText(t, filepath.Join(f.home, "a")) != "incoming\n" || readText(t, filepath.Join(f.home, "b")) != "saved\n" || !exists(filepath.Join(f.home, "new")) {
 		t.Fatal("wrong approval effects")
 	}
-	if readText(t, baseline) != before {
-		t.Fatal("refusal acknowledged incoming vault changes")
-	}
-	c, o, e = f.run("snapshot")
-	requireCode(t, 2, c, o, e)
 	c, o, e = f.runInput("y\n", "install")
 	requireCode(t, 0, c, o, e)
 	if strings.Count(o, "[y/n]") != 1 || strings.Contains(o, "@@") || readText(t, filepath.Join(f.home, "b")) != "incoming\n" {
@@ -128,7 +119,7 @@ func TestInstallInputFailureAbortsAllWrites(t *testing.T) {
 }
 
 func TestInstallRevalidatesAfterInput(t *testing.T) {
-	for _, target := range []string{"destination", "new destination", "source", "unchanged source", "new payload", "baseline", "config"} {
+	for _, target := range []string{"destination", "new destination", "source", "unchanged source", "new payload", "config"} {
 		t.Run(target, func(t *testing.T) {
 			f := setup(t, "~/file", "~/new", "~/same")
 			for _, n := range []string{"file", "new", "same"} {
@@ -138,12 +129,10 @@ func TestInstallRevalidatesAfterInput(t *testing.T) {
 			requireCode(t, 0, c, o, e)
 			f.write(filepath.Join(f.home, "file"), "local")
 			must(t, os.Remove(filepath.Join(f.home, "new")))
-			state, err := StateDir(f.vault)
-			must(t, err)
-			paths := map[string]string{"destination": filepath.Join(f.home, "file"), "new destination": filepath.Join(f.home, "new"), "source": filepath.Join(f.vault, "file"), "unchanged source": filepath.Join(f.vault, "same"), "new payload": filepath.Join(f.vault, ".sfm.json"), "baseline": filepath.Join(state, "baseline.json"), "config": f.config}
+			paths := map[string]string{"destination": filepath.Join(f.home, "file"), "new destination": filepath.Join(f.home, "new"), "source": filepath.Join(f.vault, "file"), "unchanged source": filepath.Join(f.vault, "same"), "new payload": filepath.Join(f.vault, ".sfm.json"), "config": f.config}
 			input := readFunc(func(p []byte) (int, error) { f.write(paths[target], "other writer"); return copy(p, "y\n"), nil })
 			var out bytes.Buffer
-			_, err = runWithInput([]string{"--config", f.config, "install"}, input, &out)
+			_, err := runWithInput([]string{"--config", f.config, "install"}, input, &out)
 			if err == nil || !strings.Contains(err.Error(), "changed during operation") {
 				t.Fatalf("%v: %s", err, out.String())
 			}
@@ -236,5 +225,70 @@ func TestDiffEmptyBinaryModesAndLinks(t *testing.T) {
 	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "empty file") || !strings.Contains(o, "binary contents differ") || !strings.Contains(o, "permissions 0750 -> 0600") || !strings.Contains(o, "link second -> first") {
 		t.Fatal(o)
+	}
+}
+
+func TestInstallIgnoresLegacyHistoryChangesDuringInput(t *testing.T) {
+	f := setup(t, "~/file")
+	f.write(filepath.Join(f.home, "file"), "local")
+	f.write(filepath.Join(f.vault, "file"), "incoming")
+	state, err := StateDir(f.vault)
+	must(t, err)
+	baseline := filepath.Join(state, "baseline.json")
+	f.write(baseline, "old history")
+	input := readFunc(func(p []byte) (int, error) {
+		f.write(baseline, "other writer")
+		return copy(p, "y\n"), nil
+	})
+	var out bytes.Buffer
+	_, err = runWithInput([]string{"--config", f.config, "install"}, input, &out)
+	must(t, err)
+	if readText(t, filepath.Join(f.home, "file")) != "incoming" || readText(t, baseline) != "other writer" {
+		t.Fatal("legacy history affected installation")
+	}
+}
+
+type writeFunc func([]byte) (int, error)
+
+func (f writeFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestCaptureAndForgetRevalidateBeforeWrites(t *testing.T) {
+	for _, cmd := range []string{"snapshot", "forget"} {
+		for _, target := range []string{"local", "vault", "config", "new payload"} {
+			t.Run(cmd+"/"+target, func(t *testing.T) {
+				f := setup(t, "~/file")
+				local := filepath.Join(f.home, "file")
+				vault := filepath.Join(f.vault, "file")
+				f.write(local, "local")
+				f.write(vault, "before")
+				configBefore := readText(t, f.config)
+				paths := map[string]string{"local": local, "vault": vault, "config": f.config, "new payload": filepath.Join(f.vault, "new")}
+				changed := false
+				output := writeFunc(func(p []byte) (int, error) {
+					if !changed {
+						f.write(paths[target], "other writer")
+						changed = true
+					}
+					return len(p), nil
+				})
+				args := []string{"--config", f.config, cmd}
+				if cmd == "forget" {
+					args = append(args, local)
+				}
+				_, err := runWithInput(args, strings.NewReader(""), output)
+				if err == nil || !strings.Contains(err.Error(), "changed during") {
+					t.Fatal(err)
+				}
+				if readText(t, paths[target]) != "other writer" {
+					t.Fatal("concurrent edit overwritten")
+				}
+				if target != "vault" && readText(t, vault) != "before" {
+					t.Fatal("partial vault change")
+				}
+				if target != "config" && readText(t, f.config) != configBefore {
+					t.Fatal("partial configuration change")
+				}
+			})
+		}
 	}
 }

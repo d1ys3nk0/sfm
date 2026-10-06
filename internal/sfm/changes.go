@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -47,10 +46,8 @@ func (o observed) check() error {
 
 func (m *manager) observeControls() (observed, error) {
 	o := observed{}
-	for _, p := range []string{m.c.source, filepath.Join(m.state, "baseline.json")} {
-		if e := o.add(p); e != nil {
-			return nil, e
-		}
+	if e := o.add(m.c.source); e != nil {
+		return nil, e
 	}
 	return o, nil
 }

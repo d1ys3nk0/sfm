@@ -147,27 +147,6 @@ func TestSnapshotLayoutAndActualModes(t *testing.T) {
 			t.Fatalf("entry %s: %v != %v", name, got, want)
 		}
 	}
-	state, err := StateDir(f.vault)
-	must(t, err)
-	baseline, err := readRecord(filepath.Join(state, "baseline.json"))
-	must(t, err)
-	cfg, err := readConfig(f.config)
-	must(t, err)
-	m, err := newManager(cfg, &strings.Builder{})
-	must(t, err)
-	actual, err := m.vaultEntries()
-	must(t, err)
-	if len(actual) != len(baseline.Entries) {
-		t.Fatalf("baseline omitted created ancestor dirs: %v / %v", baseline.Entries, actual)
-	}
-	for n, d := range actual {
-		if baseline.Entries[n] != d {
-			t.Fatal("baseline differs: " + n)
-		}
-	}
-	if strings.Contains(readText(t, filepath.Join(state, "baseline.json")), "metadata") || baseline.Version != 3 {
-		t.Fatal("wrong baseline format")
-	}
 	// Dry preview only: a forced synthetic root install could alter system ancestors.
 	must(t, os.Remove(rootFile))
 	c, o, e = f.run("install", "--dry")
@@ -177,14 +156,12 @@ func TestSnapshotLayoutAndActualModes(t *testing.T) {
 	}
 }
 
-func TestVaultChmodRequiresReconciliation(t *testing.T) {
+func TestVaultChmodInstallAndLocalCapture(t *testing.T) {
 	f := setup(t, "~/file")
 	f.write(filepath.Join(f.home, "file"), "same")
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
 	must(t, os.Chmod(filepath.Join(f.vault, "file"), 0750))
-	c, o, e = f.run("snapshot")
-	requireCode(t, 2, c, o, e)
 	c, o, e = f.run("install", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
 	if !strings.Contains(o, "permissions 0600 -> 0750") {
@@ -238,24 +215,6 @@ func TestForgetAbsentDirectoryUsesVault(t *testing.T) {
 	}
 }
 
-func TestOldBaselineRequiresMigration(t *testing.T) {
-	f := setup(t)
-	state, e := StateDir(f.vault)
-	must(t, e)
-	path := filepath.Join(state, "baseline.json")
-	old := `{"version":2,"entries":{},"metadata":{}}`
-	f.write(path, old)
-	for _, cmd := range []string{"install", "snapshot"} {
-		c, o, errOut := f.run(cmd, "--dry")
-		requireCode(t, 2, c, o, errOut)
-		if !strings.Contains(errOut, "migrate the vault layout and local baseline to version 3") || readText(t, path) != old {
-			t.Fatal(errOut)
-		}
-	}
-	c, o, errOut := f.run("verify")
-	requireCode(t, 0, c, o, errOut)
-}
-
 func TestVerifyDoesNotInspectSources(t *testing.T) {
 	f := setup(t, "~/unreadable/")
 	must(t, os.Mkdir(filepath.Join(f.home, "unreadable"), 0000))
@@ -268,7 +227,7 @@ func TestVerifyDoesNotInspectSources(t *testing.T) {
 	}
 }
 
-func TestSnapshotKeepsUnselectedBaselinePending(t *testing.T) {
+func TestSnapshotPreservesUnselectedPayload(t *testing.T) {
 	f := setup(t, "~/chosen")
 	f.write(filepath.Join(f.vault, "other"), "old")
 	c, o, e := f.run("install")
@@ -277,11 +236,104 @@ func TestSnapshotKeepsUnselectedBaselinePending(t *testing.T) {
 	f.write(filepath.Join(f.home, "chosen"), "new")
 	c, o, e = f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	state, err := StateDir(f.vault)
+	if readText(t, filepath.Join(f.vault, "other")) != "incoming" {
+		t.Fatal("unselected incoming payload was changed")
+	}
+}
+
+func TestOperationsUseCurrentFilesWithoutHistory(t *testing.T) {
+	for _, legacy := range []string{"", "not JSON", `{"version":2,"entries":{},"metadata":{}}`, `{"version":3,"entries":{"home/..":{"type":"dir","mode":448}}}`} {
+		t.Run(legacy, func(t *testing.T) {
+			f := setup(t, "~/file")
+			local := filepath.Join(f.home, "file")
+			vault := filepath.Join(f.vault, "file")
+			f.write(local, "local")
+			f.write(vault, "incoming")
+			state, err := StateDir(f.vault)
+			must(t, err)
+			baseline := filepath.Join(state, "baseline.json")
+			if legacy != "" {
+				f.write(baseline, legacy)
+			}
+			checkHistory := func() {
+				t.Helper()
+				if legacy == "" {
+					if exists(baseline) {
+						t.Fatal("created baseline")
+					}
+				} else if readText(t, baseline) != legacy {
+					t.Fatal("changed legacy baseline")
+				}
+			}
+			for _, cmd := range []string{"install", "snapshot"} {
+				c, o, e := f.run(cmd, "--dry", "--diff")
+				requireCode(t, 0, c, o, e)
+				if readText(t, local) != "local" || readText(t, vault) != "incoming" {
+					t.Fatal("preview changed payloads")
+				}
+				checkHistory()
+			}
+			c, o, e := f.run("snapshot")
+			requireCode(t, 0, c, o, e)
+			if readText(t, vault) != "local" {
+				t.Fatal("snapshot did not replace external vault change")
+			}
+			checkHistory()
+			f.write(vault, "external")
+			c, o, e = f.run("track", local)
+			requireCode(t, 0, c, o, e)
+			if readText(t, vault) != "local" {
+				t.Fatal("track did not replace external vault change")
+			}
+			checkHistory()
+			f.write(vault, "installed")
+			c, o, e = f.runInput("y\n", "install")
+			requireCode(t, 0, c, o, e)
+			if readText(t, local) != "installed" {
+				t.Fatal("install did not apply current vault")
+			}
+			checkHistory()
+			f.write(vault, "external before forget")
+			c, o, e = f.run("forget", local)
+			requireCode(t, 0, c, o, e)
+			if exists(vault) || readText(t, local) != "installed" {
+				t.Fatal("forget did not preserve installed content")
+			}
+			checkHistory()
+			entries, err := os.ReadDir(state)
+			must(t, err)
+			want := 1
+			if legacy != "" {
+				want++
+			}
+			if len(entries) != want || !exists(filepath.Join(state, "lock")) {
+				t.Fatalf("unexpected state files: %v", entries)
+			}
+		})
+	}
+}
+
+func TestSnapshotOverwritesExternalVaultPermissions(t *testing.T) {
+	f := setup(t, "~/file")
+	f.write(filepath.Join(f.home, "file"), "same")
+	f.write(filepath.Join(f.vault, "file"), "same")
+	must(t, os.Chmod(filepath.Join(f.vault, "file"), 0750))
+	c, o, e := f.run("snapshot")
+	requireCode(t, 0, c, o, e)
+	got, err := entry(filepath.Join(f.vault, "file"))
 	must(t, err)
-	base, err := readRecord(filepath.Join(state, "baseline.json"))
+	if got.Mode != 0600 {
+		t.Fatal("snapshot did not preserve local permissions")
+	}
+}
+
+func TestForgetAbsentDirectoryUsesPolicy(t *testing.T) {
+	f := setup(t, "~/dir/", "~/dir/child", "~/sibling")
+	c, o, e := f.run("forget", filepath.Join(f.home, "dir"))
+	requireCode(t, 0, c, o, e)
+	cfg, err := readConfig(f.config)
 	must(t, err)
-	if base.Entries["home/other"].Hash != bytesEntry([]byte("old")).Hash || readText(t, filepath.Join(f.vault, "other")) != "incoming" {
-		t.Fatal("unselected incoming state was acknowledged")
+	if cfg.selected("home/dir/child", false) || !cfg.selected("home/sibling", false) {
+		t.Fatal("absent directory scope was not determined from policy")
 	}
 }

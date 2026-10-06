@@ -65,7 +65,7 @@ func requireCode(t *testing.T, want int, code int, out, err string) {
 		t.Fatalf("code=%d want=%d out=%s err=%s", code, want, out, err)
 	}
 }
-func TestSnapshotInstallReconcile(t *testing.T) {
+func TestSnapshotInstallDirectComparison(t *testing.T) {
 	f := setup(t, "~/settings/")
 	file := filepath.Join(f.home, "settings/config")
 	f.write(file, "first\n")
@@ -80,8 +80,6 @@ func TestSnapshotInstallReconcile(t *testing.T) {
 		t.Fatal("capture")
 	}
 	f.write(saved, "incoming\n")
-	c, o, e = f.run("snapshot")
-	requireCode(t, 2, c, o, e)
 	c, o, e = f.runInput("n\n", "install")
 	requireCode(t, 0, c, o, e)
 	b, err = os.ReadFile(file)
@@ -191,21 +189,6 @@ func TestTrackForgetAndComments(t *testing.T) {
 	if !strings.Contains(string(b), "# retain configuration") || !strings.Contains(string(b), "# retain selection") {
 		t.Fatal("lost comments")
 	}
-}
-func TestEmptyBaseline(t *testing.T) {
-	f := setup(t)
-	for i := 0; i < 2; i++ {
-		c, o, e := f.run("snapshot")
-		requireCode(t, 0, c, o, e)
-	}
-}
-func TestUnsafeBaseline(t *testing.T) {
-	f := setup(t)
-	state, e := StateDir(f.vault)
-	must(t, e)
-	f.write(filepath.Join(state, "baseline.json"), `{"version":3,"entries":{"home/..":{"type":"dir","mode":448}}}`)
-	c, o, errOut := f.run("install")
-	requireCode(t, 2, c, o, errOut)
 }
 func TestSymlinkAncestorAndTypeConflict(t *testing.T) {
 	f := setup(t, "~/settings/file")
@@ -361,28 +344,25 @@ func TestQuotedAndDottedTOMLPolicy(t *testing.T) {
 		})
 	}
 }
-func TestIncomingDeletionRequiresDeliberateRemoval(t *testing.T) {
+func TestInstallIgnoresRemovedVaultEntries(t *testing.T) {
 	f := setup(t, "~/settings/")
 	file := filepath.Join(f.home, "settings/file")
 	f.write(file, "one")
 	c, o, e := f.run("snapshot")
 	requireCode(t, 0, c, o, e)
-	must(t, os.Remove(filepath.Join(f.vault, "settings/file")))
-	c, o, e = f.run("install", "--force")
-	requireCode(t, 0, c, o, e)
-	if !exists(file) {
-		t.Fatal("incoming deletion removed installed copy")
-	}
-	if !strings.Contains(o, "manual installed-copy removal: "+file) {
-		t.Fatal("incoming deletion was not reported: " + o)
+	must(t, os.RemoveAll(filepath.Join(f.vault, "settings")))
+	for _, args := range [][]string{{"install", "--dry", "--diff"}, {"install"}, {"install", "--force"}} {
+		c, o, e = f.run(args...)
+		requireCode(t, 0, c, o, e)
+		if readText(t, file) != "one" || o != "" {
+			t.Fatal("removed payload changed installed copy or emitted warning: " + o)
+		}
 	}
 	c, o, e = f.run("snapshot")
-	requireCode(t, 2, c, o, e)
-	must(t, os.Remove(file))
-	c, o, e = f.run("install")
 	requireCode(t, 0, c, o, e)
-	c, o, e = f.run("snapshot")
-	requireCode(t, 0, c, o, e)
+	if readText(t, filepath.Join(f.vault, "settings/file")) != "one" {
+		t.Fatal("local content was not recaptured")
+	}
 }
 
 func TestScopedTrackDoesNotInspectUnrelatedSelection(t *testing.T) {
@@ -450,12 +430,10 @@ func TestTopLevelWildcardStaysInNamespace(t *testing.T) {
 	if !exists(filepath.Join(f.vault, "selected.txt")) {
 		t.Fatal("missing top-level match")
 	}
-	state, err := StateDir(f.vault)
+	entries, err := os.ReadDir(f.vault)
 	must(t, err)
-	baseline, err := readRecord(filepath.Join(state, "baseline.json"))
-	must(t, err)
-	if len(baseline.Entries) != 1 {
-		t.Fatalf("captured outside namespace: %v", baseline.Entries)
+	if len(entries) != 1 || entries[0].Name() != "selected.txt" {
+		t.Fatalf("captured outside namespace: %v", entries)
 	}
 }
 func TestNamespaceRootHelpers(t *testing.T) {
