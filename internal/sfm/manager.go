@@ -16,6 +16,7 @@ type manager struct {
 	state      string
 	hasBase    bool
 	out        io.Writer
+	color      bool
 }
 
 func newManager(c *Config, out io.Writer) (*manager, error) {

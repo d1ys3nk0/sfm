@@ -2,4 +2,9 @@ module github.com/d1ys3nk0/sfm
 
 go 1.27.1
 
-require github.com/pelletier/go-toml/v2 v2.2.4
+require (
+	github.com/pelletier/go-toml/v2 v2.2.4
+	golang.org/x/term v0.46.0
+)
+
+require golang.org/x/sys v0.48.0 // indirect

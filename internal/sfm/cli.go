@@ -16,10 +16,11 @@ Usage: sfm [--config FILE] COMMAND [OPTIONS]
 Commands:
   snapshot [--dry] [--json]   Copy selected files into the vault
   install [--dry] [--force]   Install missing files; force replaces differences
-  diff [PATH]               Compare all files or one file/directory subtree
+  diff [PATH] [--color=WHEN] Compare all files or one file/directory subtree
   verify                    Check selection and metadata integrity
   track PATH                Track and capture a file or directory
   forget PATH               Stop tracking a file or directory
+Diff colors: auto (default), always, never; --color means always
 Global options: --config FILE, --help, --version
 `
 
@@ -33,6 +34,8 @@ func Run(args []string, out, errOut io.Writer) int {
 }
 func run(args []string, out io.Writer) (int, error) {
 	config := ""
+	color := "auto"
+	colorSet := false
 	var positional []string
 	dry, force, jsonOutput := false, false, false
 	for i := 0; i < len(args); i++ {
@@ -54,11 +57,15 @@ func run(args []string, out io.Writer) (int, error) {
 			dry = true
 		case "--force":
 			force = true
+		case "--color":
+			color, colorSet = "always", true
 		case "--json":
 			jsonOutput = true
 		default:
 			if strings.HasPrefix(a, "--config=") {
 				config = strings.TrimPrefix(a, "--config=")
+			} else if strings.HasPrefix(a, "--color=") {
+				color, colorSet = strings.TrimPrefix(a, "--color="), true
 			} else if strings.HasPrefix(a, "-") {
 				return 2, fmt.Errorf("unknown option: %s", a)
 			} else {
@@ -80,6 +87,12 @@ func run(args []string, out io.Writer) (int, error) {
 	}
 	if len(positional) != want && !(cmd == "diff" && len(positional) == 2) {
 		return 2, fmt.Errorf("invalid arguments for %s", cmd)
+	}
+	if colorSet && cmd != "diff" {
+		return 2, fmt.Errorf("--color is only valid for diff")
+	}
+	if color != "auto" && color != "always" && color != "never" {
+		return 2, fmt.Errorf("invalid color mode: %s", color)
 	}
 	if force && cmd != "install" || dry && cmd != "snapshot" && cmd != "install" || jsonOutput && (cmd != "snapshot" || !dry) {
 		return 2, fmt.Errorf("options are not valid for %s", cmd)
@@ -114,6 +127,7 @@ func run(args []string, out io.Writer) (int, error) {
 	if e != nil {
 		return 2, e
 	}
+	m.color = color == "always" || color == "auto" && terminalOutput(out)
 	switch cmd {
 	case "snapshot":
 		e = m.snapshot(dry, jsonOutput, "", nil)
