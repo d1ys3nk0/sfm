@@ -1,5 +1,9 @@
 name: Check
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -33,3 +37,81 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go run github.com/zricethezav/gitleaks/v8@v8.30.0 git --redact --no-banner .
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: check
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: release --snapshot --clean
+      - name: Verify snapshot archives and executable metadata
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          import subprocess
+          import tarfile
+          import tempfile
+
+          dist = Path("dist")
+          archives = sorted(dist.glob("*.tar.gz"))
+          targets = {"darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64"}
+          checksums = {}
+          for line in (dist / "checksums.txt").read_text().splitlines():
+              digest, name = line.split()
+              name = name.lstrip("*")
+              if name in checksums:
+                  raise ValueError(f"Duplicate checksum: {name}")
+              checksums[name] = digest
+          if len(archives) != 4 or set(checksums) != {p.name for p in archives}:
+              raise ValueError("Expected exactly four archives and matching checksum entries")
+          versions = set()
+          found = set()
+          host_binary = None
+          for archive in archives:
+              target = next((t for t in targets if archive.name.endswith(f"_{t}.tar.gz")), None)
+              if target is None or target in found or not archive.name.startswith("sfm_"):
+                  raise ValueError(f"Unexpected archive: {archive.name}")
+              found.add(target)
+              version = archive.name[len("sfm_"):-len(f"_{target}.tar.gz")]
+              if not version:
+                  raise ValueError("Missing archive version")
+              versions.add(version)
+              if hashlib.sha256(archive.read_bytes()).hexdigest() != checksums[archive.name]:
+                  raise ValueError(f"Checksum mismatch: {archive.name}")
+              with tarfile.open(archive, "r:gz") as contents:
+                  members = contents.getmembers()
+                  if len(members) != 3 or {m.name for m in members} != {"sfm", "README.md", "LICENSE"}:
+                      raise ValueError(f"Unexpected archive contents: {archive.name}")
+                  if not all(m.isfile() and m.size > 0 for m in members):
+                      raise ValueError(f"Expected nonempty regular files: {archive.name}")
+                  executable = contents.getmember("sfm")
+                  if not executable.mode & 0o111:
+                      raise ValueError(f"Nonexecutable sfm: {archive.name}")
+                  if target == "linux_amd64":
+                      host_binary = contents.extractfile(executable).read()
+          if found != targets or len(versions) != 1:
+              raise ValueError("Archive platforms or versions disagree")
+          commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with tempfile.TemporaryDirectory() as directory:
+              binary = Path(directory) / "sfm"
+              binary.write_bytes(host_binary)
+              binary.chmod(0o755)
+              output = subprocess.check_output([str(binary), "--version"], text=True).strip()
+              expected = f"sfm {versions.pop()} ({commit})"
+              if output != expected:
+                  raise ValueError(f"Unexpected version metadata: {output}")
+          print("Verified all four archives, SHA-256 checksums, and executable version/commit")

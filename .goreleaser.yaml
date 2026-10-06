@@ -9,7 +9,8 @@ builds:
     ldflags:
       - '-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}'
 archives:
-  - formats: [tar.gz]
+  - name_template: "sfm_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
     files: [LICENSE, README.md]
 checksum:
   name_template: checksums.txt
