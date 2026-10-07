@@ -298,8 +298,8 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 	actions := append([]action{}, extra...)
 	for _, n := range sorted(remove, true) {
 		actions = append(actions, action{path: m.c.vaultPath(n)})
-		fmt.Fprintln(m.out, "delete "+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 		d := remove[n]
+		m.describeOperation("delete", strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"), &d, nil)
 		if e = m.describeChange(m.c.vaultPath(n), "", &d, nil, nil, showDiff); e != nil {
 			return e
 		}
@@ -318,15 +318,15 @@ func (m *manager) snapshot(dry, showDiff bool, scope string, extra []action) err
 			}
 			copyD := d
 			actions = append(actions, action{m.c.vaultPath(n), &copyD, b})
-			verb := "create "
+			verb := "create"
 			if ok {
-				verb = "replace "
+				verb = "replace"
 			}
-			fmt.Fprintln(m.out, verb+strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"))
 			var previous *Entry
 			if ok {
 				previous = &before
 			}
+			m.describeOperation(verb, strings.TrimPrefix(m.c.vaultPath(n), m.c.Vault+"/"), previous, &d)
 			if e = m.describeChange(m.c.vaultPath(n), p, previous, &d, b, showDiff); e != nil {
 				return e
 			}
@@ -401,11 +401,11 @@ func (m *manager) install(force, dry, showDiff bool, in io.Reader) error {
 	var actions []action
 	reader := bufio.NewReader(in)
 	for _, ch := range changes {
-		verb := "create "
+		verb := "create"
 		if ch.before != nil {
-			verb = "replace "
+			verb = "replace"
 		}
-		fmt.Fprintln(m.out, verb+ch.action.path)
+		m.describeOperation(verb, ch.action.path, ch.before, ch.action.want)
 		if e = m.describeChange(ch.action.path, m.c.vaultPath(ch.name), ch.before, ch.action.want, ch.action.data, showDiff); e != nil {
 			return e
 		}

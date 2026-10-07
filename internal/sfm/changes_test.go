@@ -34,7 +34,7 @@ func TestInstallPreviewAllChanges(t *testing.T) {
 		}
 		c, o, e = f.run(args...)
 		requireCode(t, 0, c, o, e)
-		if !strings.Contains(o, "create "+filepath.Join(f.home, "new")) || !strings.Contains(o, "replace "+filepath.Join(f.home, "changed")) || strings.Contains(o, filepath.Join(f.home, "same")) || strings.Contains(o, "[y/n]") {
+		if !strings.Contains(o, "create: "+filepath.Join(f.home, "new")) || !strings.Contains(o, "replace: "+filepath.Join(f.home, "changed")) || strings.Contains(o, filepath.Join(f.home, "same")) || strings.Contains(o, "[y/n]") {
 			t.Fatal(o)
 		}
 		if strings.Contains(o, "@@") != content {
@@ -215,7 +215,7 @@ func TestDiffEmptyBinaryModesAndLinks(t *testing.T) {
 	must(t, os.Symlink("second", filepath.Join(f.home, "link")))
 	c, o, e = f.run("snapshot", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
-	if !strings.Contains(o, "permissions 0600 -> 0750") || !strings.Contains(o, "link first -> second") || strings.Contains(o, "@@") {
+	if !strings.Contains(o, "[0600 -> 0750]") || !strings.Contains(o, "link first -> second") || strings.Contains(o, "@@") {
 		t.Fatal(o)
 	}
 	for _, n := range []string{"empty", "binary"} {
@@ -223,7 +223,7 @@ func TestDiffEmptyBinaryModesAndLinks(t *testing.T) {
 	}
 	c, o, e = f.run("install", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
-	if !strings.Contains(o, "empty file") || !strings.Contains(o, "binary contents differ") || !strings.Contains(o, "permissions 0750 -> 0600") || !strings.Contains(o, "link second -> first") {
+	if !strings.Contains(o, "empty file") || !strings.Contains(o, "binary contents differ") || !strings.Contains(o, "[0750 -> 0600]") || !strings.Contains(o, "link second -> first") {
 		t.Fatal(o)
 	}
 }

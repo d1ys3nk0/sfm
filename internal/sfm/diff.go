@@ -10,14 +10,20 @@ import (
 	"golang.org/x/term"
 )
 
+func (m *manager) describeOperation(verb, path string, before, after *Entry) {
+	fmt.Fprintf(m.out, "%s: %s", verb, path)
+	if after != nil {
+		if before != nil && before.Mode != after.Mode {
+			fmt.Fprintf(m.out, " [%#o -> %#o]", before.Mode, after.Mode)
+		} else {
+			fmt.Fprintf(m.out, " [%#o]", after.Mode)
+		}
+	}
+	fmt.Fprintln(m.out)
+}
+
 // describeChange renders current destination -> desired contents.
 func (m *manager) describeChange(path, source string, before, after *Entry, data []byte, showDiff bool) error {
-	if before == nil && after != nil {
-		fmt.Fprintf(m.out, "permissions /dev/null -> %#o\n", after.Mode)
-	}
-	if before != nil && after != nil && before.Mode != after.Mode {
-		fmt.Fprintf(m.out, "permissions %#o -> %#o\n", before.Mode, after.Mode)
-	}
 	if after != nil && after.Type == "link" {
 		old := "/dev/null"
 		if before != nil {

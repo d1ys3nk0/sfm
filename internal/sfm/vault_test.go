@@ -103,7 +103,7 @@ func TestAllVaultFilesArePayloads(t *testing.T) {
 	c, o, e = f.run("install", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
 	for _, n := range []string{".sfm.json", ".git/marker", "home/file", "root/file", "unselected"} {
-		if !strings.Contains(o, "create "+filepath.Join(f.home, n)) {
+		if !strings.Contains(o, "create: "+filepath.Join(f.home, n)) {
 			t.Fatal("omitted payload: " + n + "\n" + o)
 		}
 	}
@@ -135,7 +135,7 @@ func TestSnapshotLayoutAndActualModes(t *testing.T) {
 	if readText(t, rootPayload) != "root payload" || readText(t, filepath.Join(f.vault, "dir/file")) != "home payload" || exists(filepath.Join(f.vault, ".sfm.json")) || exists(filepath.Join(f.vault, "home")) {
 		t.Fatal("wrong layout")
 	}
-	if !strings.Contains(o, "create dir/file") || !strings.Contains(o, "create _/"+strings.TrimPrefix(rootFile, "/")) || strings.Contains(o, "create home/") {
+	if !strings.Contains(o, "create: dir/file") || !strings.Contains(o, "create: _/"+strings.TrimPrefix(rootFile, "/")) || strings.Contains(o, "create: home/") {
 		t.Fatal(o)
 	}
 	for _, name := range []string{"empty", "link"} {
@@ -151,7 +151,7 @@ func TestSnapshotLayoutAndActualModes(t *testing.T) {
 	must(t, os.Remove(rootFile))
 	c, o, e = f.run("install", "--dry")
 	requireCode(t, 0, c, o, e)
-	if !strings.Contains(o, "create "+rootFile) || exists(rootFile) {
+	if !strings.Contains(o, "create: "+rootFile) || exists(rootFile) {
 		t.Fatal(o)
 	}
 }
@@ -164,7 +164,7 @@ func TestVaultChmodInstallAndLocalCapture(t *testing.T) {
 	must(t, os.Chmod(filepath.Join(f.vault, "file"), 0750))
 	c, o, e = f.run("install", "--dry", "--diff")
 	requireCode(t, 0, c, o, e)
-	if !strings.Contains(o, "permissions 0600 -> 0750") {
+	if !strings.Contains(o, "[0600 -> 0750]") {
 		t.Fatal(o)
 	}
 	c, o, e = f.runInput("y\n", "install")
@@ -192,7 +192,7 @@ func TestForgetPreservesUnselectedChildren(t *testing.T) {
 	// Remaining payloads stay installable even though capture rules exclude them.
 	c, o, e = f.run("install", "--dry")
 	requireCode(t, 0, c, o, e)
-	if !strings.Contains(o, "create "+filepath.Join(f.home, "dir/retained/file")) {
+	if !strings.Contains(o, "create: "+filepath.Join(f.home, "dir/retained/file")) {
 		t.Fatal(o)
 	}
 }
