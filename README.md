@@ -65,4 +65,6 @@ This layout is incompatible with the former `home/`, `root/`, and `.sfm.json` va
 
 Run `make check` for check-only pre-commit lint hooks, module consistency, race tests, vulnerability scanning, and secret scanning. `make lint` runs manual fixers followed by checks; `make lint-chk` runs check hooks only. CI invokes the underlying Go tools directly. `make lint-fix` formats Go sources. `make build` produces a trimmed binary with version and revision metadata. Install local lint hooks with `pre-commit install`; see [CONTRIBUTING](CONTRIBUTING.md).
 
+Use `make release:fix` to increment the highest version's PATCH, or `make release:feat` to increment MINOR and reset PATCH. Both commands fetch tags from `origin`, tag the current commit, and push the new tag. If the commit already has a tag matching `v*.*.*`, they succeed without creating or pushing a tag. See [release instructions](CONTRIBUTING.md#releases).
+
 SFM is licensed under [MIT](LICENSE).

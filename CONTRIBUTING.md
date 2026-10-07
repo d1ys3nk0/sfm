@@ -8,12 +8,14 @@ Use Conventional Commits. Explain the observable problem, resulting behavior, an
 
 ## Releases
 
-Push a tag on a checked revision after the release workflow is merged into `main`:
+Run `make check` on the revision to release, then choose a patch or minor release:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+make release:fix   # v0.0.4 -> v0.0.5
+make release:feat  # v0.0.4 -> v0.1.0
 ```
+
+Both commands fetch tags from `origin`, select the highest canonical version numerically, create a lightweight tag on the current commit, and push only that tag to `origin`. A fix increments PATCH; a feature increments MINOR and resets PATCH to zero. With no canonical version tags, the baseline is `v0.0.0`. If the current commit already has any tag matching `v*.*.*`, the command succeeds without creating or pushing a tag; this is checked before and after fetching. Uncommitted changes are not included. If pushing fails, the tag remains local and the command prints the push command to retry; running the release target again skips the already tagged commit.
 
 Tags must use `vMAJOR.MINOR.PATCH`, with numeric components, no leading zeros except zero itself, and no prerelease or build suffix. The Release workflow validates the tag, runs all Check jobs on the tagged revision (Linux/macOS checks, secret scanning, and snapshot packaging verification), and then publishes a GitHub Release using pinned GoReleaser v2.18.2. Packaging checks validate all four archives and SHA-256 checksums, then run the Linux AMD64 binary with `--version` to verify embedded version and commit metadata. Ordinary branch and pull-request checks continue independently.
 
